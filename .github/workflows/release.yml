@@ -1,0 +1,71 @@
+name: Release
+
+# Publication d'une version : Actions › Release › Run workflow, avec le numéro (ex. 0.2.1, sans le « v »).
+# Contrôle que la version est la même partout, relance les tests, puis crée le tag vX.Y.Z et la release GitHub
+# avec ssm-connector-wp.zip (nom stable) et ssm-connector-wp-vX.Y.Z.zip. Les notes sont la section du CHANGELOG.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version à publier, sans le v (ex. 0.2.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Seule la branche main peut être publiée
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Lancer ce workflow sur la branche main (actuel : $GITHUB_REF)." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Contrôler la version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "Version invalide : attendu X.Y.Z" >&2; exit 1; }
+          sh scripts/check-version.sh "$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "Le tag v$VERSION existe déjà." >&2
+            exit 1
+          fi
+
+      - name: Tests (PHP 7.4, la version minimale annoncée)
+        run: |
+          docker run --rm -v "$PWD":/app -w /app php:7.4-cli sh -c '
+            set -e
+            for f in ssm-connector.php uninstall.php tests/*.php; do php -l "$f"; done
+            php tests/run.php'
+
+      - name: Construire les ZIP
+        run: sh scripts/build-zip.sh dist
+
+      - name: Notes de version (section du CHANGELOG)
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "Section [$VERSION] vide ou absente du CHANGELOG." >&2; exit 1; }
+          cat notes.md
+
+      - name: Créer le tag et la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "v$VERSION" \
+            "dist/ssm-connector-wp-v$VERSION.zip" dist/ssm-connector-wp.zip \
+            --target "$GITHUB_SHA" --title "v$VERSION" --notes-file notes.md
