@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="SSM Connector">
+  <title>SSM Connector</title>
+  <defs>
+    <linearGradient id="ssm-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#ssm-bg)"/>
+  <!-- broches de la prise -->
+  <rect x="90" y="34" width="22" height="58" rx="10" fill="#dbeafe"/>
+  <rect x="144" y="34" width="22" height="58" rx="10" fill="#dbeafe"/>
+  <!-- corps de la prise et câble -->
+  <rect x="60" y="82" width="136" height="98" rx="32" fill="#fff"/>
+  <rect x="110" y="168" width="36" height="52" rx="14" fill="#fff"/>
+  <!-- ligne de pouls : le heartbeat envoyé à SSM Core -->
+  <polyline points="80,131 110,131 122,104 140,160 152,131 176,131" fill="none" stroke="#2563eb" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

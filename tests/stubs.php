@@ -13,8 +13,44 @@ $GLOBALS['ssm_http'] = null;      // function ($url, $args) : array|WP_Error sim
 $GLOBALS['ssm_http_calls'] = [];
 $GLOBALS['ssm_settings_errors'] = [];
 $GLOBALS['ssm_scheduled'] = [];
+$GLOBALS['ssm_get'] = null;        // function ($url, $args) : array|WP_Error simulant l'API GitHub
+$GLOBALS['ssm_get_calls'] = [];
+$GLOBALS['ssm_transient_ttl'] = [];
+$GLOBALS['ssm_download'] = null;   // function ($url) : string (chemin) | WP_Error
+$GLOBALS['ssm_salt'] = 'salt-A';        // clé de sécurité de WordPress
+$GLOBALS['ssm_can'] = true;           // l'utilisateur courant peut manage_options / update_plugins
+$GLOBALS['ssm_screen'] = null;        // identifiant de l'écran d'administration courant
+$GLOBALS['ssm_disk_version'] = null; // version écrite dans le fichier sur disque (null = celle du fichier réel)
 
 function add_action($hook, $cb, $priority = 10, $args = 1) { $GLOBALS['ssm_hooks'][$hook][] = $cb; }
+function add_filter($hook, $cb, $priority = 10, $args = 1) { $GLOBALS['ssm_hooks'][$hook][] = $cb; }
+function plugin_basename($file) { return 'ssm-connector/ssm-connector.php'; }
+function plugins_url($path, $plugin) { return 'https://exemple.test/wp-content/plugins/ssm-connector/' . $path; }
+function set_site_transient($key, $value, $ttl = 0) { $GLOBALS['ssm_transients'][$key] = $value; $GLOBALS['ssm_transient_ttl'][$key] = $ttl; return true; }
+function delete_site_transient($key) { unset($GLOBALS['ssm_transients'][$key]); return true; }
+function wp_salt($scheme = 'auth') { return $GLOBALS['ssm_salt']; }
+function current_user_can($cap) { return $GLOBALS['ssm_can']; }
+function get_current_screen() { return $GLOBALS['ssm_screen'] === null ? null : (object) ['id' => $GLOBALS['ssm_screen']]; }
+function admin_url($path = '') { return 'https://exemple.test/wp-admin/' . $path; }
+function wp_nonce_field($action) { echo '<input type="hidden" name="_wpnonce" value="nonce-' . $action . '" />'; }
+function submit_button($text = '', $type = 'primary', $name = 'submit', $wrap = true) { echo '<button type="submit" class="' . $type . '">' . $text . '</button>'; }
+function esc_attr($s) { return htmlspecialchars((string) $s, ENT_QUOTES); }
+function wp_die($message = '', $title = '', $args = []) { throw new RuntimeException('wp_die: ' . $message); }
+function esc_html($s) { return htmlspecialchars((string) $s, ENT_QUOTES); }
+function esc_url($s) { return (string) $s; }
+function wp_date($format, $ts = null) { return date($format, $ts ?? time()); }
+function wp_remote_get($url, $args = []) {
+    $GLOBALS['ssm_get_calls'][] = ['url' => $url, 'args' => $args];
+    return call_user_func($GLOBALS['ssm_get'], $url, $args);
+}
+function get_file_data($file, $headers) {
+    if ($GLOBALS['ssm_disk_version'] !== null) {
+        return ['Version' => $GLOBALS['ssm_disk_version']];
+    }
+    preg_match('/^ \* Version: *(.+)$/m', file_get_contents($file), $m);
+    return ['Version' => isset($m[1]) ? trim($m[1]) : ''];
+}
+function download_url($url, $timeout = 300) { return call_user_func($GLOBALS['ssm_download'], $url); }
 function register_activation_hook($file, $cb) {}
 function register_deactivation_hook($file, $cb) {}
 function register_setting($group, $name, $args = []) { $GLOBALS['ssm_registered'][$name] = $args; }
@@ -77,6 +113,12 @@ class FakeTheme {
     public function get_template() { return $this->template; }
 }
 
+class FakeFs {
+    public $moves = [];
+    public $ok = true;
+    public function move($from, $to, $overwrite = false) { $this->moves[] = [$from, $to]; return $this->ok; }
+}
+
 class FakeRequest {
     private $headers;
     private $params;
@@ -96,6 +138,15 @@ function ssm_reset() {
     $GLOBALS['ssm_http_calls'] = [];
     $GLOBALS['ssm_settings_errors'] = [];
     $GLOBALS['ssm_scheduled'] = [];
+    $GLOBALS['ssm_get'] = null;
+    $GLOBALS['ssm_get_calls'] = [];
+    $GLOBALS['ssm_transient_ttl'] = [];
+    $GLOBALS['ssm_download'] = null;
+    $GLOBALS['ssm_disk_version'] = null;
+    $GLOBALS['ssm_salt'] = 'salt-A';
+    $GLOBALS['ssm_can'] = true;
+    $GLOBALS['ssm_screen'] = null;
+    $GLOBALS['wp_filesystem'] = new FakeFs();
     $GLOBALS['ssm_plugins'] = [
         'akismet/akismet.php' => ['Name' => 'Akismet Anti-spam', 'Version' => '5.3'],
         'woocommerce/woocommerce.php' => ['Name' => 'WooCommerce', 'Version' => '9.1.2'],

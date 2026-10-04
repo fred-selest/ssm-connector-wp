@@ -6,14 +6,16 @@ if (!defined('WP_UNINSTALL_PLUGIN')) {
 }
 
 wp_clear_scheduled_hook('ssm_heartbeat_event');
+delete_site_transient('ssm_connector_release');
 
 foreach ([
     'ssm_connector_token',
     'ssm_connector_url',
-    'ssm_pending_events',
+    'ssm_connector_schema',
     'ssm_last_heartbeat_at',
     'ssm_last_heartbeat_ok',
     'ssm_last_heartbeat_message',
+    'ssm_pending_events',   // file d'événements des versions 0.2.x
 ] as $option) {
     delete_option($option);
 }
