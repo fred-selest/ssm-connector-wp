@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  php:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.1', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntaxe et tests sur PHP ${{ matrix.php }}
+        run: |
+          docker run --rm -v "$PWD":/app -w /app php:${{ matrix.php }}-cli sh -c '
+            set -e
+            for f in ssm-connector.php uninstall.php tests/*.php; do php -l "$f"; done
+            php tests/run.php'
+
+  package:
+    name: Version et ZIP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Versions cohérentes
+        run: sh scripts/check-version.sh
+      - name: Construire le ZIP
+        run: sh scripts/build-zip.sh dist
+      - name: Contenu du ZIP
+        run: |
+          unzip -l dist/ssm-connector-wp.zip
+          # un seul dossier à la racine : celui que WordPress crée dans wp-content/plugins/
+          test "$(unzip -Z1 dist/ssm-connector-wp.zip | cut -d/ -f1 | sort -u)" = "ssm-connector"
+          unzip -Z1 dist/ssm-connector-wp.zip | grep -qx 'ssm-connector/ssm-connector.php'
