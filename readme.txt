@@ -1,40 +1,47 @@
 === SSM Connector ===
 Contributors: selest-informatique
-Tags: monitoring, maintenance, security, inventory
+Tags: monitoring, maintenance, inventory
 Requires at least: 5.5
-Tested up to: 6.8
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.2.0
+Stable tag: 0.2.1
 License: Private
 
-Connecteur SSM (Selest Site Manager) — inventaire + MAJ + logs + sécurité.
+Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core.
 
 == Description ==
 
-Plugin privé réservé aux clients Selest Informatique.
+Extension privée réservée aux clients Selest Informatique.
 
-Fonctionnalités :
-* Inventaire automatique (plugins, thèmes, versions PHP/WP, multisite, users)
-* Heartbeat horaire avec rapport détaillé vers SSM Core
-* Event queue : login, plugin (de)activation, MAJ core/extension/thème
-* Signature HMAC-SHA256 des requêtes
-* Page d'admin pour configurer l'URL SSM Core et voir le statut heartbeat
+Elle envoie à SSM Core, toutes les heures :
+* la version de WordPress, de PHP et de la base de données ;
+* les extensions et les thèmes, avec les mises à jour disponibles ;
+* en file d'attente, les connexions, les (dés)activations d'extensions et les mises à jour (SSM Core ne les exploite pas encore).
+
+Elle ne modifie rien sur le site.
 
 == Installation ==
 
-1. Téléchargez `ssm-connector-wp-v0.2.0.zip`
-2. WP Admin > Extensions > Ajouter > Téléverser le ZIP
-3. Activer le plugin
-4. Réglages > SSM Connector : saisir l'URL SSM Core
-5. Copier le token affiché et le coller dans l'admin SSM Core (interface Sites > Détail)
+1. Téléversez `ssm-connector-wp.zip` (Extensions > Ajouter > Téléverser) puis activez l'extension.
+2. Dans SSM Core (Sites, bouton 🔌), copiez le token du site.
+3. Réglages > SSM Connector : saisissez l'URL de SSM Core et collez le token, puis Enregistrer.
+4. Cliquez sur « Envoyer un heartbeat maintenant » : le résultat s'affiche dans la section État.
 
 == Changelog ==
 
+= 0.2.1 =
+* Correction : erreur fatale au chargement (méthode deactivate() déclarée deux fois) : l'extension ne pouvait pas être activée.
+* Correction : les extensions n'étaient pas reçues par SSM Core (clé « plugins » au lieu de « extensions »), qui vidait alors la liste à chaque envoi.
+* Correction : le token de SSM se colle maintenant dans l'extension (champ dédié) ; l'URL de SSM Core s'enregistre enfin (réglage jamais déclaré auparavant).
+* Correction : valeurs tronquées aux limites de SSM Core (version de PHP, etc.) pour éviter un refus 422 de tout l'inventaire.
+* Correction : la désactivation d'une extension n'était pas distinguée de son activation.
+* Correction : les événements ne sont plus perdus quand l'envoi échoue ; les redirections ne sont plus suivies.
+* Ajout : bouton « Envoyer un heartbeat maintenant », état du dernier envoi avec la cause de l'échec, commande `wp ssm heartbeat`.
+* Ajout : nom de la machine, chemin du site, version de la base ; mises à jour de thèmes ; token créé aussi en mu-plugin ; uninstall.php.
+* Le token n'est plus accepté dans l'URL des routes REST et n'est plus affiché en entier.
+
 = 0.2.0 =
-* Admin UI (Settings > SSM Connector)
-* Heartbeat cron horaire avec inventaire complet
-* Event queue (login, plugin, MAJ core/extensions)
-* HMAC-SHA256 signature
+* Page de réglages, envoi horaire, file d'événements, signature HMAC. Ne se chargeait pas (voir 0.2.1).
 
 = 0.1.0 =
-* Release initiale (status, extensions, heartbeat)
+* Version initiale.
