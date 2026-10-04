@@ -40,3 +40,4 @@ jobs:
           # un seul dossier à la racine : celui que WordPress crée dans wp-content/plugins/
           test "$(unzip -Z1 dist/ssm-connector-wp.zip | cut -d/ -f1 | sort -u)" = "ssm-connector"
           unzip -Z1 dist/ssm-connector-wp.zip | grep -qx 'ssm-connector/ssm-connector.php'
+          for f in icon.svg icon-128x128.png icon-256x256.png; do unzip -Z1 dist/ssm-connector-wp.zip | grep -qx "ssm-connector/assets/$f"; done

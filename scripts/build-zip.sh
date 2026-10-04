@@ -13,6 +13,7 @@ version=$(sed -n 's/^ \* Version: *//p' ssm-connector.php | head -1 | tr -d '\r'
 rm -rf "$out/build"
 mkdir -p "$out/build/ssm-connector"
 cp ssm-connector.php uninstall.php readme.txt "$out/build/ssm-connector/"
+cp -r assets "$out/build/ssm-connector/assets"
 rm -f "$out/ssm-connector-wp-v$version.zip" "$out/ssm-connector-wp.zip"
 (cd "$out/build" && zip -q -r -X "../ssm-connector-wp-v$version.zip" ssm-connector)
 cp "$out/ssm-connector-wp-v$version.zip" "$out/ssm-connector-wp.zip"
