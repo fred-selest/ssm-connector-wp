@@ -65,12 +65,36 @@ Depuis WP-CLI : `wp config set SSM_CONNECTOR_TOKEN "$TOKEN" --type=constant`.
 | extensions : identifiant, nom, version, active ou non, mise à jour disponible et version proposée | suivi des mises à jour et des vulnérabilités |
 | thèmes : mêmes champs, plus le thème parent | idem |
 | version du connecteur | savoir quels sites sont à jour |
+| capacités (ce que le connecteur sait exécuter), version du cœur proposée | SSM n'envoie que ce que le connecteur sait faire |
+| erreurs PHP : niveau, message, fichier et ligne relatifs au site, nombre d'occurrences | page « Erreurs PHP » et alertes de SSM |
+| comptes rendus des mises à jour et des actions demandées | historique dans SSM |
 
 Rien d'autre : ni utilisateurs, ni contenu, ni e-mails, ni identifiants de connexion.
 
+## Ce que SSM peut demander
+
+Rien n'est fait sans demande de SSM (bouton « Demander », ou site en politique automatique). Les demandes
+arrivent dans la réponse au heartbeat ; le compte rendu part au heartbeat suivant.
+
+| Demande | Ce que fait le connecteur |
+|---|---|
+| mise à jour d'une extension ou d'un thème | sauvegarde du dossier, mise à jour, version relue sur le disque, contrôle de la page d'accueil ; retour à la version précédente si le site casse |
+| mise à jour du cœur | contrôle avant et après ; **pas de retour arrière automatique** (un site cassé est rapporté) |
+| activer, désactiver, supprimer une extension | jamais une extension active supprimée, jamais le connecteur lui-même |
+| installer une extension | depuis wordpress.org uniquement, non activée |
+| sauvegarder le site | `database.sql` + `wp-config.php` + `wp-content` dans un zip, déposé sur l'URL pré-signée du stockage S3 de l'agence (SSM ne voit pas passer l'archive) |
+
+## Connexion directe depuis SSM (facultative)
+
+Désactivée par défaut. Pour l'activer : `define('SSM_CONNECTOR_ALLOW_LOGIN', true);` dans `wp-config.php`, et
+facultativement `define('SSM_CONNECTOR_LOGIN_USER', 'identifiant');` (sinon : le premier administrateur).
+SSM remet alors une clé propre au site ; un lien de connexion est signé avec elle, valable 60 secondes, une seule
+fois, et uniquement pour ce site. C'est la **seule porte d'entrée** de l'extension, et elle n'existe que si la
+constante est posée.
+
 ## Sécurité
 
-- **Aucune porte d'entrée** : l'extension n'enregistre aucune route (ni REST, ni AJAX public) et n'écoute rien. Elle envoie à SSM, c'est tout.
+- **Aucune porte d'entrée** par défaut : l'extension n'enregistre aucune route (ni REST, ni AJAX public) et n'écoute rien. La seule exception est la connexion directe, posée uniquement si `SSM_CONNECTOR_ALLOW_LOGIN` est défini.
 - **Token chiffré dans la base** (libsodium, clé dérivée des clés de sécurité de `wp-config.php`) : une sauvegarde de base ou une injection SQL en lecture ne révèle pas le token. Si ces clés changent, la page le signale et il suffit de recoller le token. Pour ne jamais l'écrire dans la base : constantes dans `wp-config.php`.
 - **https obligatoire** hors réseau privé : une adresse `http://` vers Internet est refusée. Le certificat est toujours vérifié (il n'existe aucune option pour l'ignorer) et les redirections ne sont jamais suivies, pour que le token n'aille pas ailleurs.
 - Le token n'est **jamais affiché en entier** (4 derniers caractères), jamais prérempli, jamais cité dans un message d'erreur.

@@ -4,6 +4,47 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), ver
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-09
+
+### Ajouté
+- **Contrat 3 de SSM Core (2.13).** Le connecteur annonce ce qu'il sait faire (`capabilities`) :
+  SSM ne lui envoie rien d'autre. Un SSM plus ancien ignore les nouveaux champs.
+- **Mises à jour sûres.** Avant chaque mise à jour, la page d'accueil est contrôlée ; après, elle
+  l'est de nouveau. Si le site répondait et ne répond plus (HTTP 5xx, « erreur critique »), la
+  version précédente est remise et le compte rendu le dit. Un site déjà en panne avant n'est pas
+  « remis » à tort. Une requête impossible (pare-feu) ne conclut rien.
+- **Thèmes et cœur.** `update_theme` (sauvegarde du thème, retour arrière) et `update_core`
+  (pas de retour arrière automatique pour le cœur : un site cassé est rapporté comme tel). La
+  version du cœur proposée par WordPress est envoyée à SSM.
+- **Actions sur les extensions** : activer, désactiver, installer depuis wordpress.org (le paquet
+  doit venir de downloads.wordpress.org), supprimer une extension inactive. Le connecteur ne se
+  désactive ni ne se supprime lui-même. Comptes rendus séparés (`command_results`).
+- **Erreurs PHP** : erreurs fatales relevées en fin de requête, et lecture incrémentale du journal
+  de PHP (`WP_DEBUG_LOG` ou `error_log`, 512 Ko au plus par envoi). Chemins rendus relatifs au site.
+- **Sauvegarde du site** (`backup_site`) : base exportée en SQL, `wp-config.php` et `wp-content`
+  (sans caches ni sauvegardes d'autres extensions, médias en option) dans une archive zip déposée
+  directement sur l'URL pré-signée fournie par SSM. Dossier de travail protégé et toujours vidé.
+
+### Corrigé (constaté sur un vrai WordPress)
+- **Les mises à jour d'extensions demandées par SSM échouaient toutes** (« WordPress a refusé la mise
+  à jour sans détail ») : le connecteur passait le dossier de l'extension à `Plugin_Upgrader`, qui
+  attend son fichier principal. Le faux upgrader des tests acceptait n'importe quoi ; il exige
+  désormais un fichier, comme le vrai.
+- **Une extension mise à jour hors tâche planifiée restait désactivée** (WP-CLI, bouton « Tester la
+  connexion ») : WordPress la désactive et compte sur le navigateur pour la réactiver. Le connecteur
+  la réactive ; une réactivation impossible est un échec, avec retour arrière.
+- **Le contrôle de santé testait l'ancien code** : l'OPcache ne relit un fichier modifié qu'après
+  2 secondes. Le contrôle d'après-mise à jour attend 3 s (`SSM_CONNECTOR_HEALTH_DELAY`) et contourne
+  les caches de page.
+- Les extensions d'un seul fichier (`hello.php`) étaient introuvables pour les actions et les mises à jour.
+- Une erreur fatale pouvait être comptée deux fois (journal et fin de requête).
+
+### Ajouté (suite)
+- **Connexion directe depuis SSM**, désactivée par défaut : `define('SSM_CONNECTOR_ALLOW_LOGIN', true);`.
+  Clé propre au site, remise par SSM et stockée chiffrée ; lien signé HMAC, 60 secondes, usage
+  unique, refusé s'il vise un autre site. Ouvre une session pour `SSM_CONNECTOR_LOGIN_USER`, sinon
+  le premier administrateur. Les 20 dernières connexions sont journalisées.
+
 ## [0.4.0] - 2026-10-08
 
 ### Ajouté
