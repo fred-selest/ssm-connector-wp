@@ -3,6 +3,10 @@
 // Les tests sur un vrai WordPress se font à part ; ceux-ci servent à repérer vite une erreur de code ou de contrat.
 
 define('ABSPATH', sys_get_temp_dir() . '/ssm-fake-wp/');
+define('WP_PLUGIN_DIR', sys_get_temp_dir() . '/ssm-fake-wp-plugins/');
+// `queue_result` est appele par les tests : on le rend accessible.
+$GLOBALS['ssm_upgrade_ok'] = true;     // l'upgrader simulé réussit-il ?
+$GLOBALS['ssm_writable'] = true;        // wp-content est-il inscriptible ?
 
 $GLOBALS['ssm_opts'] = [];        // options
 $GLOBALS['ssm_hooks'] = [];       // [hook => [callbacks]]
@@ -85,6 +89,22 @@ function esc_url_raw($url, $protocols = null) {
     return $url;
 }
 function is_wp_error($x) { return $x instanceof WP_Error; }
+
+// --- Mise a jour d'extension simulee ---
+// Le vrai Plugin_Upgrader télécharge un paquet et le décompresse. Ici on ne simule que ce qui
+// décide du résultat : réussit ou échoue. La relecture de la version se fait sur le disque
+// ($GLOBALS['ssm_disk_version']), ce qui permet de vérifier qu'on ne croit pas l'upgrader sur parole.
+class Automatic_Upgrader_Skin {}
+class Plugin_Upgrader {
+    public function __construct($skin = null) {}
+    public function upgrade($plugin) {
+        if (!$GLOBALS['ssm_upgrade_ok']) {
+            return new WP_Error('upgrader', 'échec simulé du paquet.');
+        }
+        $GLOBALS['ssm_upgraded'][] = $plugin;
+        return true;
+    }
+}
 function wp_remote_post($url, $args) {
     $GLOBALS['ssm_http_calls'][] = ['url' => $url, 'args' => $args];
     return call_user_func($GLOBALS['ssm_http'], $url, $args);
@@ -130,6 +150,21 @@ class FakeRequest {
     public function get_param($name) { return $this->params[$name] ?? null; }
 }
 
+/** Supprime un dossier et son contenu (les sauvegardes de test). */
+function ssm_rmtree($dir) {
+    if (!is_dir($dir)) {
+        return;
+    }
+    foreach (scandir($dir) as $item) {
+        if ($item === '.' || $item === '..') {
+            continue;
+        }
+        $path = $dir . '/' . $item;
+        is_dir($path) ? ssm_rmtree($path) : @unlink($path);
+    }
+    @rmdir($dir);
+}
+
 /** Réinitialise l'état entre deux tests. */
 function ssm_reset() {
     $GLOBALS['ssm_opts'] = [];
@@ -146,7 +181,25 @@ function ssm_reset() {
     $GLOBALS['ssm_salt'] = 'salt-A';
     $GLOBALS['ssm_can'] = true;
     $GLOBALS['ssm_screen'] = null;
+    $GLOBALS['ssm_upgrade_ok'] = true;
+    $GLOBALS['ssm_upgraded'] = [];
+    $GLOBALS['ssm_writable'] = true;   // disque inscriptible par defaut
+    // `is_writable` est un builtin et se comporte autrement sous root : on passe par la couture
+    // du connecteur pour simuler un disque non inscriptible.
+    SSM_Connector::$disk_check = $GLOBALS['ssm_writable']
+        ? null : function ($path) { return false; };
     $GLOBALS['wp_filesystem'] = new FakeFs();
+    // Un dossier d'extension minimal, pour que la sauvegarde et la restauration aient de vrai
+    // fichiers a copier. Le contenu importe peu ; ce qui compte est qu'un tree existe.
+    $plugins = WP_PLUGIN_DIR;
+    ssm_rmtree($plugins);
+    mkdir($plugins, 0755, true);
+    foreach (['akismet', 'woocommerce', 'inactive-demo'] as $slug) {
+        mkdir($plugins . '/' . $slug, 0755, true);
+        file_put_contents($plugins . '/' . $slug . '/' . $slug . '.php', "<?php\n/* Version: 1.0 */\n");
+        file_put_contents($plugins . '/' . $slug . '/index.php', "<?php\n");
+    }
+    mkdir($plugins . '/ssm-backups', 0755, true);
     $GLOBALS['ssm_plugins'] = [
         'akismet/akismet.php' => ['Name' => 'Akismet Anti-spam', 'Version' => '5.3'],
         'woocommerce/woocommerce.php' => ['Name' => 'WooCommerce', 'Version' => '9.1.2'],

@@ -152,7 +152,7 @@ test("l'inventaire respecte le contrat de SSM Core", function () use ($ssm) {
 test("données minimales : rien que SSM Core lit, aucune donnée personnelle", function () use ($ssm) {
     $keys = array_keys($ssm->collect_inventory());
     sort($keys);
-    $expected = ['cms', 'cms_version', 'connector_version', 'db_version', 'extensions', 'hostname', 'php_version', 'site_path', 'themes', 'web_server'];
+    $expected = ['cms', 'cms_version', 'connector_version', 'db_version', 'extensions', 'hostname', 'php_version', 'results', 'site_path', 'themes', 'web_server'];
     same($keys, $expected, 'clés envoyées');
     $json = json_encode($ssm->collect_inventory());
     foreach (['admin_email', 'users_count', 'pending_events', 'login', 'password', 'token'] as $forbidden) {
@@ -551,15 +551,15 @@ const REPO_URL = 'https://github.com/fred-selest/ssm-connector-wp';
 
 function release_json(array $override = []) {
     return array_merge([
-        'tag_name' => 'v0.4.0',
+        'tag_name' => 'v0.5.0',
         'draft' => false,
         'prerelease' => false,
-        'html_url' => REPO_URL . '/releases/tag/v0.4.0',
+        'html_url' => REPO_URL . '/releases/tag/v0.5.0',
         'body' => "### Corrigé\n- un truc",
         'published_at' => '2026-10-05T10:00:00Z',
         'assets' => [
-            ['name' => 'ssm-connector-wp-v0.4.0.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.4.0/ssm-connector-wp-v0.4.0.zip', 'digest' => 'sha256:' . str_repeat('11', 32)],
-            ['name' => 'ssm-connector-wp.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.4.0/ssm-connector-wp.zip', 'digest' => 'sha256:' . str_repeat('ab', 32)],
+            ['name' => 'ssm-connector-wp-v0.5.0.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.5.0/ssm-connector-wp-v0.5.0.zip', 'digest' => 'sha256:' . str_repeat('11', 32)],
+            ['name' => 'ssm-connector-wp.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.5.0/ssm-connector-wp.zip', 'digest' => 'sha256:' . str_repeat('ab', 32)],
         ],
     ], $override);
 }
@@ -578,8 +578,8 @@ test("mises à jour : lecture stricte d'une release", function () {
     $u = updater();
     $r = $u->parse_release(release_json());
     check($r['ok'], 'release valide acceptée');
-    same($r['release']['version'], '0.4.0', 'version sans le v');
-    same($r['release']['package'], REPO_URL . '/releases/download/v0.4.0/ssm-connector-wp.zip', "c'est le ZIP à nom stable qui est choisi");
+    same($r['release']['version'], '0.5.0', 'version sans le v');
+    same($r['release']['package'], REPO_URL . '/releases/download/v0.5.0/ssm-connector-wp.zip', "c'est le ZIP à nom stable qui est choisi");
     same($r['release']['sha256'], str_repeat('ab', 32), 'somme SHA-256 de ce ZIP');
     same($u->parse_release(release_json(['tag_name' => '0.4.0']))['release']['version'], '0.4.0', 'tag sans v accepté');
     foreach (['latest', 'v0.4', 'v1.0.0-beta', ' v0.4.0', "v0.4.0\n", '', 'v0.4.0.1', 'v0.4.x'] as $bad) {
@@ -587,7 +587,7 @@ test("mises à jour : lecture stricte d'une release", function () {
     }
     check(!$u->parse_release(release_json(['draft' => true]))['ok'], 'brouillon refusé');
     check(!$u->parse_release(release_json(['prerelease' => true]))['ok'], 'préversion refusée');
-    check(!$u->parse_release(release_json(['assets' => [['name' => 'autre.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.4.0/autre.zip']]]))['ok'], 'ZIP manquant refusé');
+    check(!$u->parse_release(release_json(['assets' => [['name' => 'autre.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.5.0/autre.zip']]]))['ok'], 'ZIP manquant refusé');
     check(!$u->parse_release(release_json(['assets' => 'x']))['ok'], 'assets invalide refusé');
 });
 
@@ -595,8 +595,8 @@ test("mises à jour : le paquet doit venir des releases du dépôt", function ()
     $u = updater();
     foreach ([
         'https://evil.example/ssm-connector-wp.zip',
-        'https://github.com/autre/depot/releases/download/v0.4.0/ssm-connector-wp.zip',
-        'http://github.com/fred-selest/ssm-connector-wp/releases/download/v0.4.0/ssm-connector-wp.zip',
+        'https://github.com/autre/depot/releases/download/v0.5.0/ssm-connector-wp.zip',
+        'http://github.com/fred-selest/ssm-connector-wp/releases/download/v0.5.0/ssm-connector-wp.zip',
         'https://github.com.evil.example/fred-selest/ssm-connector-wp/releases/download/v0/ssm-connector-wp.zip',
         'https://github.com/fred-selest/ssm-connector-wp-evil/releases/download/v0/ssm-connector-wp.zip',
     ] as $url) {
@@ -607,7 +607,7 @@ test("mises à jour : le paquet doit venir des releases du dépôt", function ()
 
 test("mises à jour : somme de contrôle absente tolérée, présente mais illisible refusée", function () {
     $u = updater();
-    $zip = REPO_URL . '/releases/download/v0.4.0/ssm-connector-wp.zip';
+    $zip = REPO_URL . '/releases/download/v0.5.0/ssm-connector-wp.zip';
     $none = $u->parse_release(release_json(['assets' => [['name' => 'ssm-connector-wp.zip', 'browser_download_url' => $zip]]]));
     check($none['ok'] && $none['release']['sha256'] === null, 'sans somme : acceptée, non contrôlée');
     foreach (['sha1:' . str_repeat('a', 40), 'sha256:xyz', 'sha256:' . str_repeat('AB', 32), 'sha256:' . str_repeat('a', 63), ['sha256']] as $bad) {
@@ -662,8 +662,8 @@ test("mises à jour : WordPress reçoit la nouvelle version", function () {
     $t = (object) ['response' => ['autre/autre.php' => (object) ['new_version' => '2.0']], 'no_update' => [], 'checked' => []];
     $out = $u->inject($t);
     $e = $out->response['ssm-connector/ssm-connector.php'];
-    same($e->new_version, '0.4.0', 'nouvelle version');
-    same($e->package, REPO_URL . '/releases/download/v0.4.0/ssm-connector-wp.zip', 'paquet');
+    same($e->new_version, '0.5.0', 'nouvelle version');
+    same($e->package, REPO_URL . '/releases/download/v0.5.0/ssm-connector-wp.zip', 'paquet');
     same($e->slug, 'ssm-connector', 'slug = dossier');
     same($e->plugin, 'ssm-connector/ssm-connector.php', 'fichier du plugin');
     check(!empty($e->icons['1x']) && !empty($e->icons['2x']) && !empty($e->icons['svg']), 'icônes fournies');
@@ -672,7 +672,7 @@ test("mises à jour : WordPress reçoit la nouvelle version", function () {
 });
 
 test("mises à jour : à jour ou plus ancienne = pas d'installation proposée", function () {
-    foreach (['v0.3.0', 'v0.2.0'] as $tag) {
+    foreach (['v0.4.0', 'v0.3.0', 'v0.2.0'] as $tag) {
         ssm_reset();
         github_returns(200, release_json(['tag_name' => $tag, 'assets' => [['name' => 'ssm-connector-wp.zip', 'browser_download_url' => REPO_URL . "/releases/download/$tag/ssm-connector-wp.zip"]]]));
         $out = updater()->inject((object) ['response' => ['ssm-connector/ssm-connector.php' => (object) ['new_version' => '9.9.9']]]);
@@ -683,18 +683,19 @@ test("mises à jour : à jour ou plus ancienne = pas d'installation proposée", 
 });
 
 test("mises à jour : juste après l'installation, la version du disque fait foi (le code en mémoire est l'ancien)", function () {
-    // WordPress refait sa liste de mises à jour dans le MÊME processus que la mise à jour : SSM_CONNECTOR_VERSION y vaut encore
-    // l'ancienne version. Sans lecture du disque, la version qui vient d'être installée resterait proposée pendant 12 h.
+    // WordPress refait sa liste de mises à jour dans le MÊME processus que la mise à jour :
+    // SSM_CONNECTOR_VERSION y vaut encore la version chargée en mémoire, pas celle du disque.
+    // Sans lecture du disque, la version qui vient d'être installée resterait proposée pendant 12 h.
     $u = updater();
-    github_returns(200, release_json());   // 0.4.0
-    $GLOBALS['ssm_disk_version'] = '0.4.0';
-    $out = $u->inject((object) ['response' => ['ssm-connector/ssm-connector.php' => (object) ['new_version' => '0.4.0']]]);
+    github_returns(200, release_json());       // 0.5.0 disponible sur GitHub
+    $GLOBALS['ssm_disk_version'] = '0.5.0';   // et c'est celle-ci qu'on vient d'installer
+    $out = $u->inject((object) ['response' => ['ssm-connector/ssm-connector.php' => (object) ['new_version' => '0.5.0']]]);
     check(!isset($out->response['ssm-connector/ssm-connector.php']), 'la version installée n\'est plus proposée');
     $e = $out->no_update['ssm-connector/ssm-connector.php'] ?? null;
-    check($e !== null && $e->new_version === '0.4.0' && $e->package === '', 'entrée no_update à la version du disque');
-    $GLOBALS['ssm_disk_version'] = '0.3.0';
+    check($e !== null && $e->new_version === '0.5.0' && $e->package === '', 'entrée no_update à la version du disque');
+    $GLOBALS['ssm_disk_version'] = '0.4.0';   // avant la mise à jour, c'est 0.4.0 qui est installée
     $out = $u->inject((object) []);
-    check(isset($out->response['ssm-connector/ssm-connector.php']), 'avant la mise à jour, 0.4.0 reste proposée');
+    check(isset($out->response['ssm-connector/ssm-connector.php']), 'avant la mise à jour, 0.5.0 reste proposée');
 });
 
 test("mises à jour : GitHub en panne ne casse rien", function () {
@@ -713,8 +714,8 @@ test("mises à jour : fenêtre « Afficher les détails »", function () {
     github_returns(200, release_json(['body' => '<script>alert(1)</script> & notes']));
     $u->state();
     $info = $u->plugin_information(false, 'plugin_information', (object) ['slug' => 'ssm-connector']);
-    same($info->version, '0.4.0', 'version');
-    same($info->download_link, REPO_URL . '/releases/download/v0.4.0/ssm-connector-wp.zip', 'lien');
+    same($info->version, '0.5.0', 'version');
+    same($info->download_link, REPO_URL . '/releases/download/v0.5.0/ssm-connector-wp.zip', 'lien');
     check(strpos($info->sections['changelog'], '<script>') === false && strpos($info->sections['changelog'], '&lt;script&gt;') !== false, 'notes échappées');
     same($u->plugin_information(false, 'plugin_information', (object) ['slug' => 'autre']), false, 'autre extension : inchangé');
     same($u->plugin_information('x', 'query_plugins', (object) ['slug' => 'ssm-connector']), 'x', 'autre action : inchangé');
@@ -727,7 +728,7 @@ test("mises à jour : contrôle de la somme SHA-256 avant installation", functio
     $file = tempnam(sys_get_temp_dir(), 'ssmzip');
     file_put_contents($file, 'contenu du zip');
     $sum = hash('sha256', 'contenu du zip');
-    $pkg = REPO_URL . '/releases/download/v0.4.0/ssm-connector-wp.zip';
+    $pkg = REPO_URL . '/releases/download/v0.5.0/ssm-connector-wp.zip';
     $GLOBALS['ssm_download'] = function ($url) use ($file) { return $file; };
 
     github_returns(200, release_json(['assets' => [['name' => 'ssm-connector-wp.zip', 'browser_download_url' => $pkg, 'digest' => "sha256:$sum"]]]));
@@ -807,6 +808,110 @@ foreach (['valid', 'invalid'] as $mode) {
     }
     check($code === 0, "phase constantes ($mode)");
 }
+
+// === Mises a jour demandees par SSM Core ===
+
+test("mise a jour : rien n'est execute sans commande", function () use ($ssm) {
+    same($ssm->collect_inventory()['results'], [], 'aucun compte rendu au repos');
+    check(!is_dir(WP_PLUGIN_DIR . '/akismet-9.0.0'), 'aucune sauvegarde sans commande');
+});
+
+test("mise a jour : un compte rendu.part, puis il ne repart plus", function () use ($ssm) {
+    $ssm->queue_result(7, 'success', null, '9.1.2');
+    $envoyes = $ssm->collect_inventory()['results'];
+    same($envoyes, [['update_id' => 7, 'status' => 'success', 'version' => '9.1.2']], 'compte rendu transmis');
+    same($ssm->collect_inventory()['results'], [], 'un compte rendu ne repart pas deux fois');
+});
+
+test("mise a jour : le compte rendu ne contient aucune donnée personnelle", function () use ($ssm) {
+    $ssm->queue_result(7, 'failed', 'permission denied sur wp-content/plugins');
+    $json = json_encode($ssm->collect_inventory()['results']);
+    foreach (['admin_email', 'user', 'login', 'password', 'token', 'ip'] as $forbidden) {
+        check(stripos($json, $forbidden) === false, "pas de « $forbidden » dans un compte rendu");
+    }
+    check(isset($json[0]) && strpos($json, 'update_id') !== false, 'le compte rendu porte bien son identifiant');
+});
+
+test("mise a jour : un slug qui sort du dossier des extensions est refuse", function () use ($ssm) {
+    // Le slug vient de SSM, donc d'un tiers : sans controle, il designerait n'importe quel chemin.
+    $ssm->apply_commands([['id' => 1, 'kind' => 'update_extension', 'slug' => '../../wp-config', 'to_version' => '1.0']]);
+    $r = $GLOBALS['ssm_opts']['ssm_update_results'][0];
+    same($r['status'], 'failed', 'slug hostile refusé');
+    check(strpos($r['error'], 'refusé') !== false, 'la raison est explicite');
+});
+
+test("mise a jour : une commande inconnue est refusee, pas executee", function () use ($ssm) {
+    $ssm->apply_commands([['id' => 2, 'kind' => 'drop_database', 'slug' => 'akismet', 'to_version' => '9']]);
+    $r = $GLOBALS['ssm_opts']['ssm_update_results'][0];
+    same($r['status'], 'failed', 'commande inconnue refusée');
+    check(strpos($r['error'], 'inconnue') !== false, 'la raison nomme la commande');
+});
+
+test("mise a jour : une extension absente est signalee, pas devinée", function () use ($ssm) {
+    $ssm->apply_commands([['id' => 3, 'kind' => 'update_extension', 'slug' => 'inexistant', 'to_version' => '9']]);
+    $r = $GLOBALS['ssm_opts']['ssm_update_results'][0];
+    same($r['status'], 'failed', 'extension absente');
+    check(stripos($r['error'], 'introuvable') !== false, 'la raison dit ce qui manque');
+});
+
+test("mise a jour : une version cible absente est refusee", function () use ($ssm) {
+    $ssm->apply_commands([['id' => 4, 'kind' => 'update_extension', 'slug' => 'akismet']]);
+    $r = $GLOBALS['ssm_opts']['ssm_update_results'][0];
+    same($r['status'], 'failed', 'version cible absente');
+});
+
+test("mise a jour : deja a jour, on ne degrade rien", function () use ($ssm) {
+    // WooCommerce est en 9.1.2 et la commande demande 9.1.0 : rien à faire.
+    $ssm->apply_commands([['id' => 5, 'kind' => 'update_extension', 'slug' => 'woocommerce', 'to_version' => '9.1.0']]);
+    $r = $GLOBALS['ssm_opts']['ssm_update_results'][0];
+    same($r['status'], 'success', 'deja a jour');
+    same($r['version'], '9.1.2', 'la version installée est rapportée');
+});
+
+test("mise a jour : sauvegarde avant modification, et restauration si ça échoue", function () use ($ssm) {
+    $GLOBALS['ssm_upgrade_ok'] = false;   // l'upgrader échoue
+    $ssm->apply_commands([['id' => 6, 'kind' => 'update_extension', 'slug' => 'akismet', 'to_version' => '9.9.9']]);
+    $sauvegardes = glob(WP_PLUGIN_DIR . '/' . SSM_Connector::BACKUP_DIR . '/akismet-*', GLOB_ONLYDIR) ?: [];
+    check(count($sauvegardes) >= 1, 'une sauvegarde existe avant toute modification');
+    $r = $GLOBALS['ssm_opts']['ssm_update_results'][0];
+    same($r['status'], 'failed', 'l\'échec est rapporté, pas masqué');
+    check(stripos($r['error'], 'remis') !== false || stripos($r['error'], 'restauration') !== false,
+        "le compte rendu dit ce qu'est devenu le site");
+    $GLOBALS['ssm_upgrade_ok'] = true;
+});
+
+test("mise a jour : sans sauvegarde possible, on n'essaie pas", function () use ($ssm) {
+    // La couture est l'objet lui-meme : le global n'est lu qu'au reinitialisation.
+    SSM_Connector::$disk_check = function ($path) { return false; };
+    $ssm->apply_commands([['id' => 8, 'kind' => 'update_extension', 'slug' => 'akismet', 'to_version' => '9.9.9']]);
+    $r = $GLOBALS['ssm_opts']['ssm_update_results'][0];
+    same($r['status'], 'failed', 'refus sans sauvegarde');
+    check(stripos($r['error'], 'annul') !== false, 'la mise a jour est explicitement annulee');
+    check(count($GLOBALS['ssm_upgraded']) === 0, "l'upgrader n'a pas ete appele");
+    SSM_Connector::$disk_check = null;
+});
+
+test("mise a jour : la version installée est relue sur le disque", function () use ($ssm) {
+    // L'upgrader « réussit » mais n'installe rien : c'est le cas quand le paquet est vide ou
+    // corrompu. Se fier au retour de l'upgrader ferait croire a une reussite.
+    $GLOBALS['ssm_disk_version'] = '5.3';
+    $ssm->apply_commands([['id' => 9, 'kind' => 'update_extension', 'slug' => 'akismet', 'to_version' => '9.9.9']]);
+    $r = $GLOBALS['ssm_opts']['ssm_update_results'][0];
+    same($r['status'], 'failed', 'rien n\'a été installé, donc échec');
+    $GLOBALS['ssm_disk_version'] = null;
+});
+
+test("mise a jour : les sauvegardes s'accumulent pas indefiniment", function () use ($ssm) {
+    for ($i = 0; $i < 6; $i++) {
+        $GLOBALS['ssm_upgrade_ok'] = false;
+        $ssm->apply_commands([['id' => 100 + $i, 'kind' => 'update_extension', 'slug' => 'akismet', 'to_version' => '9.0.' . $i]]);
+        $GLOBALS['ssm_opts']['ssm_update_results'] = [];
+    }
+    $GLOBALS['ssm_upgrade_ok'] = true;
+    $garde = glob(WP_PLUGIN_DIR . '/' . SSM_Connector::BACKUP_DIR . '/akismet-*', GLOB_ONLYDIR) ?: [];
+    check(count($garde) <= SSM_Connector::BACKUPS_KEPT + 1, 'les anciennes sauvegardes sont purgées ('
+        . count($garde) . ' conservées, plafond ' . (SSM_Connector::BACKUPS_KEPT + 1) . ')');
+});
 
 echo "\n$checks vérifications, $failures échec(s)\n";
 exit($failures === 0 ? 0 : 1);

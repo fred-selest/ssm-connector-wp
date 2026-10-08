@@ -4,6 +4,27 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), ver
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-08
+
+### Ajouté
+- **Exécution des mises à jour demandées par SSM Core.** SSM Core n'a pas accès au système de
+  fichiers d'un site : il envoie une instruction dans la réponse du heartbeat, ce connecteur
+  l'exécute, et renvoie le compte rendu au heartbeat suivant. Le cycle est donc fermé — c'est la
+  seule chose qui autorise SSM à écrire « appliquée ».
+- **Une sauvegarde avant chaque modification**, dans `wp-content/plugins/ssm-backups/`, avec trois
+  générations conservées par extension. En cas d'échec, le dossier est restauré et le compte rendu
+  dit explicitement ce qu'est devenu le site.
+- **Rien n'est exécuté sans demande.** Ni la version installée, ni le résultat de l'exécution ne
+  sont crus sur parole : après coup, la version est relue sur le disque. Une commande annoncée comme
+  faite sans que la version ait bougé est rapportée en échec.
+
+### Sécurité
+- Le nom d'extension venu de SSM est contrôlé avant tout usage. Un identifiant contenant `../`
+  ne peut plus désigner un chemin hors du dossier des extensions.
+- Les comptes rendus n'emportent que l'identifiant de mise à jour, l'état, la version et la
+  raison : aucune donnée personnelle du site.
+
+
 ## [0.3.0] - 2026-10-04
 
 Configuration en un geste, token protégé, plus aucune porte ouverte sur le site, mises à jour intégrées à WordPress.
