@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: SSM Connector
- * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site (WordPress, PHP, extensions, thèmes) à SSM Core. N'ouvre aucune porte sur le site. Se met à jour depuis les releases GitHub.
- * Version: 0.4.0
+ * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
+ * Version: 0.5.0
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.4.0');
+define('SSM_CONNECTOR_VERSION', '0.5.0');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -42,6 +42,16 @@ class SSM_Connector {
     const OPT_LAST_MSG = 'ssm_last_heartbeat_message';
     const OPT_SCHEMA = 'ssm_connector_schema';
     const OPT_RESULTS = 'ssm_update_results';   // comptes rendus des mises a jour, renvoyes au heartbeat suivant
+    const OPT_CMD_RESULTS = 'ssm_command_results';   // comptes rendus des actions (contrat 3)
+    const OPT_PHP_ERRORS = 'ssm_php_errors';          // erreurs PHP en attente d'envoi
+    const OPT_LOG_OFFSET = 'ssm_debug_log_offset';    // position de lecture du journal de PHP
+    const OPT_LOGIN_KEY = 'ssm_login_key';            // clé de connexion directe (chiffrée)
+    const OPT_SITE_ID = 'ssm_site_id';                // identifiant du site chez SSM
+    const OPT_LOGIN_LOG = 'ssm_login_log';            // dernières connexions directes
+    const PHP_ERRORS_MAX = 100;
+    const LOG_READ_MAX = 524288;                      // 512 Ko de journal lus au plus par heartbeat
+    const BACKUP_TMP = 'ssm-backup-tmp';
+    const SINGLE_FILE = '__fichier-unique__.php';     // sauvegarde d'une extension d'un seul fichier
     const BACKUP_DIR = 'ssm-backups';
     const BACKUPS_KEPT = 3;                    // combien de sauvegarde garder par extension
     const SCHEMA = '2';
@@ -52,6 +62,10 @@ class SSM_Connector {
      * inscriptible sans cette couture.
      */
     public static $disk_check = null;
+    /** Coutures de test : connexion directe autorisée, contrôle de santé, dépôt d'une archive. */
+    public static $login_allowed = null;
+    public static $health_check = null;
+    public static $uploader = null;
     const ENC_PREFIX = 'enc:v1:';
 
     private static $instance = null;
@@ -73,6 +87,34 @@ class SSM_Connector {
         add_filter('plugin_action_links_' . plugin_basename(SSM_CONNECTOR_FILE), [$this, 'action_links']);
         register_activation_hook(SSM_CONNECTOR_FILE, [$this, 'activate']);
         register_deactivation_hook(SSM_CONNECTOR_FILE, [$this, 'deactivate']);
+        // Erreurs fatales : relevées à la fin de chaque requête (rien n'est écrit sans erreur).
+        register_shutdown_function([$this, 'capture_fatal']);
+        // La seule porte d'entrée, et seulement si l'administrateur du site l'a ouverte dans
+        // wp-config.php : sans la constante, aucun crochet public n'est posé.
+        if (self::login_allowed()) {
+            add_action('login_init', [$this, 'handle_login']);
+        }
+    }
+
+    /** Connexion directe depuis SSM : activée par define('SSM_CONNECTOR_ALLOW_LOGIN', true); dans wp-config.php. */
+    public static function login_allowed() {
+        if (self::$login_allowed !== null) {
+            return (bool) self::$login_allowed;
+        }
+        return defined('SSM_CONNECTOR_ALLOW_LOGIN') && SSM_CONNECTOR_ALLOW_LOGIN;
+    }
+
+    /** Ce que ce connecteur sait exécuter : SSM n'envoie rien d'autre. */
+    public function capabilities() {
+        $caps = ['update_extension', 'update_theme', 'update_core', 'health_check', 'plugin_activate',
+                 'plugin_deactivate', 'plugin_install', 'plugin_delete', 'php_errors'];
+        if (class_exists('ZipArchive') && function_exists('curl_init')) {
+            $caps[] = 'backup_site';
+        }
+        if (self::login_allowed()) {
+            $caps[] = 'login';
+        }
+        return $caps;
     }
 
     // === Activation, migration, planification ===
@@ -440,7 +482,42 @@ class SSM_Connector {
             // SSM les applique a la reception et n'oublie jamais un resultat, mais les renvoyer
             // indefiniment lui ferait repeter des echecs deja connus.
             'results' => $this->take_pending_results(),
+        ] + $this->contract3();
+    }
+
+    /** Champs du contrat 3 (SSM Core 2.13+) : ignorés sans dommage par un SSM plus ancien. */
+    private function contract3() {
+        $out = [
+            'capabilities' => $this->capabilities(),
+            'command_results' => $this->take_command_results(),
+            'php_errors' => $this->take_php_errors(),
+            'login_enabled' => self::login_allowed(),
         ];
+        $core = $this->core_latest();
+        if ($core['known']) {
+            // absent tant que WordPress n'a pas vérifié : SSM n'en déduit alors rien
+            $out['cms_latest_version'] = $core['version'];
+        }
+        if (self::login_allowed()) {
+            $key = $this->login_key();
+            $out['login_key_fingerprint'] = $key ? substr(hash('sha256', $key), 0, 16) : null;
+            $out['login_url'] = $this->cut(wp_login_url(), 500);
+        }
+        return $out;
+    }
+
+    /** Version du cœur proposée par WordPress : ['known' => bool, 'version' => string|null]. */
+    private function core_latest() {
+        $u = get_site_transient('update_core');
+        if (!is_object($u) || !isset($u->updates) || !is_array($u->updates)) {
+            return ['known' => false, 'version' => null];
+        }
+        foreach ($u->updates as $o) {
+            if (is_object($o) && isset($o->response, $o->current) && $o->response === 'upgrade' && $o->current !== '') {
+                return ['known' => true, 'version' => $this->cut($o->current, 50)];
+            }
+        }
+        return ['known' => true, 'version' => null];
     }
 
     // === Mises a jour demandees par SSM Core ===
@@ -490,10 +567,19 @@ class SSM_Connector {
             if (!is_array($cmd) || !isset($cmd['id'])) {
                 continue;
             }
+            $is_action = isset($cmd['ref']) && $cmd['ref'] === 'command';
             try {
-                $this->apply_command($cmd);
+                if ($is_action) {
+                    $this->apply_action((int) $cmd['id'], isset($cmd['kind']) ? (string) $cmd['kind'] : '', $cmd);
+                } else {
+                    $this->apply_command($cmd);
+                }
             } catch (\Throwable $e) {
-                $this->queue_result($cmd['id'], 'failed', $e->getMessage());
+                if ($is_action) {
+                    $this->queue_command_result($cmd['id'], 'failed', $e->getMessage());
+                } else {
+                    $this->queue_result($cmd['id'], 'failed', $e->getMessage());
+                }
             }
         }
     }
@@ -501,6 +587,14 @@ class SSM_Connector {
     private function apply_command($cmd) {
         $id = (int) $cmd['id'];
         $kind = isset($cmd['kind']) ? (string) $cmd['kind'] : '';
+        if ($kind === 'update_theme') {
+            $this->update_theme($id, $cmd);
+            return;
+        }
+        if ($kind === 'update_core') {
+            $this->update_core($id, $cmd);
+            return;
+        }
         if ($kind !== 'update_extension') {
             $this->queue_result($id, 'failed', 'Commande inconnue : ' . $kind);
             return;
@@ -531,6 +625,7 @@ class SSM_Connector {
             return;
         }
 
+        $avant_sante = $this->site_health();
         $backup = $this->backup_plugin($slug);
         if ($backup === false) {
             // Pas de sauvegarde, pas de mise a jour : sans elle, un echec se traduit par un site
@@ -539,7 +634,20 @@ class SSM_Connector {
             return;
         }
 
+        $fichier = $this->plugin_file($slug);
+        $etait_active = $fichier !== null && is_plugin_active($fichier);
+        $this->active_before_update = $etait_active ? [$fichier] : [];
         $erreur = $this->run_upgrader($slug);
+        if ($erreur === null && $etait_active && !is_plugin_active($fichier)) {
+            // Hors tâche planifiée (WP-CLI, bouton « Tester »), WordPress désactive l'extension
+            // pendant la mise à jour et compte sur le navigateur pour la réactiver : sans ceci,
+            // elle restait désactivée (constaté sur un vrai site). Une réactivation impossible
+            // (erreur fatale à l'activation) est un échec : on revient en arrière.
+            $r = activate_plugin($fichier, '', false, true);
+            if (is_wp_error($r)) {
+                $erreur = "réactivation impossible après la mise à jour : " . $r->get_error_message();
+            }
+        }
         if ($erreur !== null) {
             $remis = $this->restore_plugin($slug, $backup);
             // Dire ce qu'est devenu le site fait partie du compte rendu : sans cela, l'opérateur
@@ -560,13 +668,789 @@ class SSM_Connector {
             $this->queue_result($id, 'failed', 'Mise à jour annoncée vers ' . $cible . ' mais version installée : ' . ($apres ?: 'inconnue') . '.' . $suffixe);
             return;
         }
+        $sante = $this->site_health(true);
+        if ($avant_sante['ok'] && !$sante['ok']) {
+            // Le site répondait avant, il ne répond plus : on remet la version précédente.
+            $remis = $this->restore_plugin($slug, $backup);
+            $this->queue_result($id, 'failed', 'Site en erreur après la mise à jour vers ' . $apres . ' (' . $sante['reason'] . ')'
+                . ($remis ? ' — site remis à la version précédente.' : ' — ET LA RESTAURATION AUTOMATIQUE A ÉCHOUÉ, intervention manuelle requise.'));
+            return;
+        }
         $this->queue_result($id, 'success', null, $apres);
+    }
+
+    /**
+     * La page d'accueil répond-elle ? Une requête vers le site lui-même, après la mise à jour : le
+     * processus courant a encore l'ancien code en mémoire, la requête en charge le nouveau.
+     * Une requête impossible (pare-feu, authentification) n'est pas un échec : on ne conclut rien.
+     */
+    public function site_health($after_change = false) {
+        if (self::$health_check !== null) {
+            return call_user_func(self::$health_check, $after_change);
+        }
+        if ($after_change) {
+            // L'OPcache de PHP ne relit un fichier modifié qu'après `opcache.revalidate_freq`
+            // (2 s par défaut) : contrôler tout de suite teste l'ancien code et conclut à tort que
+            // tout va bien (constaté sur un vrai site). SSM_CONNECTOR_HEALTH_DELAY pour l'ajuster.
+            $delay = defined('SSM_CONNECTOR_HEALTH_DELAY') ? (int) SSM_CONNECTOR_HEALTH_DELAY : 3;
+            if ($delay > 0) {
+                sleep(min($delay, 30));
+            }
+        }
+        // paramètre unique : un cache de page ne doit pas répondre à la place du site
+        $url = add_query_arg('ssm_health', (string) wp_rand(100000, 999999), home_url('/'));
+        $r = wp_remote_get($url, [
+            'timeout' => 20, 'redirection' => 3, 'sslverify' => false,
+            'headers' => ['Cache-Control' => 'no-cache'],
+            'user-agent' => 'SSM-Connector/' . SSM_CONNECTOR_VERSION . ' (controle apres mise a jour)',
+        ]);
+        if (is_wp_error($r)) {
+            return ['ok' => true, 'code' => 0, 'reason' => 'contrôle impossible : ' . $r->get_error_message()];
+        }
+        $code = (int) wp_remote_retrieve_response_code($r);
+        $body = (string) wp_remote_retrieve_body($r);
+        if ($code >= 500) {
+            return ['ok' => false, 'code' => $code, 'reason' => 'HTTP ' . $code];
+        }
+        foreach (['There has been a critical error', 'Il y a eu une erreur critique', 'Fatal error</b>:', 'Parse error</b>:'] as $marque) {
+            if (stripos($body, $marque) !== false) {
+                return ['ok' => false, 'code' => $code, 'reason' => "erreur PHP fatale sur la page d'accueil"];
+            }
+        }
+        return ['ok' => true, 'code' => $code, 'reason' => 'HTTP ' . $code];
+    }
+
+    // === Thèmes et cœur ===
+
+    private function theme_root() {
+        return function_exists('get_theme_root') ? get_theme_root() : WP_CONTENT_DIR . '/themes';
+    }
+
+    private function theme_version($slug) {
+        $file = $this->theme_root() . '/' . $slug . '/style.css';
+        if (!is_file($file)) {
+            return null;
+        }
+        $data = get_file_data($file, ['Version' => 'Version']);
+        return (is_array($data) && !empty($data['Version'])) ? (string) $data['Version'] : null;
+    }
+
+    private function update_theme($id, $cmd) {
+        $slug = isset($cmd['slug']) ? (string) $cmd['slug'] : '';
+        if (!preg_match('/^[a-z0-9][a-z0-9._-]*$/i', $slug)) {
+            $this->queue_result($id, 'failed', 'Slug de thème refusé : ' . $slug);
+            return;
+        }
+        $cible = isset($cmd['to_version']) ? (string) $cmd['to_version'] : '';
+        $avant = $this->theme_version($slug);
+        if ($avant === null) {
+            $this->queue_result($id, 'failed', 'Thème « ' . $slug . ' » introuvable sur ce site.');
+            return;
+        }
+        if ($cible !== '' && version_compare($avant, $cible, '>=')) {
+            $this->queue_result($id, 'success', null, $avant);
+            return;
+        }
+        $avant_sante = $this->site_health();
+        $backup = $this->backup_tree($this->theme_root(), $slug, 'theme-');
+        if ($backup === false) {
+            $this->queue_result($id, 'failed', 'Sauvegarde impossible, mise a jour annulée. Vérifiez les droits d\'écriture de wp-content.');
+            return;
+        }
+        $erreur = $this->run_named_upgrader('Theme_Upgrader', $slug, $this->theme_root());
+        $apres = $this->theme_version($slug);
+        $casse = $erreur !== null || $apres === null || ($cible !== '' && version_compare($apres, $cible, '<'));
+        $sante = $casse ? null : $this->site_health(true);
+        if ($casse || ($avant_sante['ok'] && !$sante['ok'])) {
+            $remis = $this->restore_tree($this->theme_root(), $slug, $backup);
+            $raison = $erreur !== null ? $erreur : ($casse ? 'version installée : ' . ($apres ?: 'inconnue')
+                : 'site en erreur après la mise à jour (' . $sante['reason'] . ')');
+            $this->queue_result($id, 'failed', $raison . ($remis ? ' — thème remis à la version précédente.'
+                : ' — ET LA RESTAURATION AUTOMATIQUE A ÉCHOUÉ, intervention manuelle requise.'));
+            return;
+        }
+        $this->queue_result($id, 'success', null, $apres);
+    }
+
+    private function core_version() {
+        $file = ABSPATH . 'wp-includes/version.php';
+        if (is_file($file) && preg_match('/\$wp_version\s*=\s*[\'"]([^\'"]+)[\'"]/', (string) file_get_contents($file), $m)) {
+            return $m[1];
+        }
+        return get_bloginfo('version');
+    }
+
+    /**
+     * Mise à jour du cœur. Pas de retour arrière automatique : remettre les fichiers du cœur depuis
+     * l'intérieur de WordPress n'est pas fiable. Le contrôle de santé est fait, et son résultat
+     * rapporté tel quel — un site cassé après une mise à jour du cœur est dit, pas caché.
+     */
+    private function update_core($id, $cmd) {
+        $cible = isset($cmd['to_version']) ? (string) $cmd['to_version'] : '';
+        $avant = $this->core_version();
+        if ($cible !== '' && version_compare($avant, $cible, '>=')) {
+            $this->queue_result($id, 'success', null, $avant);
+            return;
+        }
+        if (!$this->disk_writable(ABSPATH)) {
+            $this->queue_result($id, 'failed', "Les fichiers de WordPress ne sont pas accessibles en écriture depuis cette tâche.");
+            return;
+        }
+        $avant_sante = $this->site_health();
+        if (!defined('FS_METHOD')) {
+            define('FS_METHOD', 'direct');
+        }
+        foreach (['file.php', 'misc.php', 'class-wp-upgrader.php', 'update.php'] as $fichier) {
+            $chemin = ABSPATH . 'wp-admin/includes/' . $fichier;
+            if (file_exists($chemin)) {
+                require_once $chemin;
+            }
+        }
+        if (!class_exists('\Core_Upgrader') || !function_exists('find_core_update')) {
+            $this->queue_result($id, 'failed', 'Le module de mise à jour de WordPress est indisponible sur cette installation.');
+            return;
+        }
+        $update = find_core_update($cible, function_exists('get_locale') ? get_locale() : 'en_US');
+        if (!$update) {
+            $update = find_core_update($cible, 'en_US');
+        }
+        if (!$update) {
+            $this->queue_result($id, 'failed', 'WordPress ne propose pas la version ' . $cible . ' (relancez la vérification des mises à jour).');
+            return;
+        }
+        add_filter('request_filesystem_credentials', [$this, 'grant_core_filesystem'], 10, 2);
+        try {
+            $upgrader = new \Core_Upgrader(new \Automatic_Upgrader_Skin());
+            $res = $upgrader->upgrade($update);
+        } catch (\Throwable $e) {
+            $res = new WP_Error('ssm', $e->getMessage());
+        } finally {
+            remove_filter('request_filesystem_credentials', [$this, 'grant_core_filesystem'], 10);
+        }
+        $apres = $this->core_version();
+        if (is_wp_error($res) || ($cible !== '' && version_compare($apres, $cible, '<'))) {
+            $this->queue_result($id, 'failed', (is_wp_error($res) ? $res->get_error_message() : 'version installée : ' . $apres)
+                . ' — le cœur n\'a pas de retour arrière automatique : vérifiez le site.');
+            return;
+        }
+        $sante = $this->site_health(true);
+        if ($avant_sante['ok'] && !$sante['ok']) {
+            $this->queue_result($id, 'failed', 'WordPress ' . $apres . ' installé mais le site est en erreur (' . $sante['reason']
+                . ') — pas de retour arrière automatique pour le cœur, intervention requise.', $apres);
+            return;
+        }
+        $this->queue_result($id, 'success', null, $apres);
+    }
+
+    public function grant_core_filesystem($credentials = false, $context = '') {
+        return $this->disk_writable(ABSPATH) ? true : $credentials;
+    }
+
+    /** Lance un upgrader WordPress (Theme_Upgrader…) sur un élément. Null si réussi, sinon la raison. */
+    private function run_named_upgrader($class, $slug, $root) {
+        if (!is_dir($root) || !$this->disk_writable($root)) {
+            return 'Le dossier ' . basename($root) . ' n\'est pas accessible en écriture depuis cette tâche.';
+        }
+        if (!defined('FS_METHOD')) {
+            define('FS_METHOD', 'direct');
+        }
+        foreach (['file.php', 'misc.php', 'class-wp-upgrader.php'] as $fichier) {
+            $chemin = ABSPATH . 'wp-admin/includes/' . $fichier;
+            if (file_exists($chemin)) {
+                require_once $chemin;
+            }
+        }
+        if (!class_exists('\\' . $class) || !class_exists('\Automatic_Upgrader_Skin')) {
+            return 'Le module de mise à jour de WordPress est indisponible sur cette installation.';
+        }
+        add_filter('request_filesystem_credentials', [$this, 'grant_any_filesystem'], 10, 2);
+        try {
+            $qualified = '\\' . $class;
+            $upgrader = new $qualified(new \Automatic_Upgrader_Skin());
+            $res = $upgrader->upgrade($slug);
+        } catch (\Throwable $e) {
+            return 'Erreur pendant la mise à jour : ' . $e->getMessage();
+        } finally {
+            remove_filter('request_filesystem_credentials', [$this, 'grant_any_filesystem'], 10);
+        }
+        if (is_wp_error($res)) {
+            return $res->get_error_message();
+        }
+        return $res === false ? 'WordPress a refusé la mise à jour sans détail.' : null;
+    }
+
+    public function grant_any_filesystem($credentials = false, $context = '') {
+        return $this->disk_writable(WP_CONTENT_DIR) ? true : $credentials;
+    }
+
+    /** Sauvegarde générique d'un dossier (thème…) dans ssm-backups, trois générations gardées. */
+    private function backup_tree($root, $slug, $prefix) {
+        $source = $root . '/' . $slug;
+        if (!is_dir($source) || !$this->disk_writable(WP_PLUGIN_DIR)) {
+            return false;
+        }
+        $base = WP_PLUGIN_DIR . '/' . self::BACKUP_DIR;
+        if (!is_dir($base) && !@mkdir($base, 0755, true) && !is_dir($base)) {
+            return false;
+        }
+        $dest = $base . '/' . $prefix . $slug . '-' . gmdate('Ymd-His');
+        if (!$this->copy_tree($source, $dest)) {
+            return false;
+        }
+        $this->prune_backups($prefix . $slug);
+        return $dest;
+    }
+
+    private function restore_tree($root, $slug, $backup) {
+        if (!$backup || !is_dir($backup)) {
+            return false;
+        }
+        $dest = $root . '/' . $slug;
+        $this->remove_tree($dest);
+        return $this->copy_tree($backup, $dest);
+    }
+
+    // === Actions demandées par SSM (contrat 3) : extensions, sauvegarde ===
+
+    public function take_command_results() {
+        $r = get_option(self::OPT_CMD_RESULTS, []);
+        if (!is_array($r)) {
+            return [];
+        }
+        delete_option(self::OPT_CMD_RESULTS);
+        return array_slice($r, 0, 200);
+    }
+
+    public function queue_command_result($command_id, $status, $error = null, $data = null) {
+        $entry = ['command_id' => (int) $command_id, 'status' => $status === 'success' ? 'success' : 'failed'];
+        if ($error !== null && $error !== '') {
+            $entry['error'] = $this->cut((string) $error, 500);
+        }
+        if (is_array($data)) {
+            $entry['data'] = $data;
+        }
+        $all = get_option(self::OPT_CMD_RESULTS, []);
+        if (!is_array($all)) {
+            $all = [];
+        }
+        $all[] = $entry;
+        update_option(self::OPT_CMD_RESULTS, array_slice($all, -200));
+    }
+
+    private function apply_action($id, $kind, $cmd) {
+        $params = isset($cmd['params']) && is_array($cmd['params']) ? $cmd['params'] : [];
+        if ($kind === 'backup_site') {
+            $this->backup_site($id, $params);
+            return;
+        }
+        $slug = isset($cmd['slug']) ? (string) $cmd['slug'] : '';
+        if (!in_array($kind, ['plugin_activate', 'plugin_deactivate', 'plugin_install', 'plugin_delete'], true)) {
+            $this->queue_command_result($id, 'failed', 'Action inconnue : ' . $kind);
+            return;
+        }
+        if (!preg_match('/^[a-z0-9][a-z0-9._-]*$/', $slug)) {
+            $this->queue_command_result($id, 'failed', "Identifiant d'extension refusé : " . $slug);
+            return;
+        }
+        if (!function_exists('get_plugins')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        $file = $this->plugin_file($slug);
+        $self = plugin_basename(SSM_CONNECTOR_FILE);
+        if ($file !== null && $file === $self && $kind !== 'plugin_activate') {
+            $this->queue_command_result($id, 'failed', 'Le connecteur ne se désactive ni ne se supprime lui-même.');
+            return;
+        }
+        if ($kind === 'plugin_install') {
+            $this->install_plugin($id, $slug, $file);
+            return;
+        }
+        if ($file === null) {
+            $this->queue_command_result($id, 'failed', 'Extension « ' . $slug . ' » introuvable sur ce site.');
+            return;
+        }
+        if ($kind === 'plugin_activate') {
+            $r = activate_plugin($file);
+            if (is_wp_error($r)) {
+                $this->queue_command_result($id, 'failed', $r->get_error_message());
+                return;
+            }
+            $ok = is_plugin_active($file);
+            $this->queue_command_result($id, $ok ? 'success' : 'failed', $ok ? null : "WordPress n'a pas activé l'extension.");
+            return;
+        }
+        if ($kind === 'plugin_deactivate') {
+            deactivate_plugins([$file]);
+            $ok = !is_plugin_active($file);
+            $this->queue_command_result($id, $ok ? 'success' : 'failed', $ok ? null : "WordPress n'a pas désactivé l'extension.");
+            return;
+        }
+        // plugin_delete : jamais une extension active (elle pourrait porter le site)
+        if (is_plugin_active($file)) {
+            $this->queue_command_result($id, 'failed', "Extension active : désactivez-la d'abord.");
+            return;
+        }
+        if (!function_exists('delete_plugins')) {
+            foreach (['file.php', 'plugin.php'] as $f) {
+                if (file_exists(ABSPATH . 'wp-admin/includes/' . $f)) {
+                    require_once ABSPATH . 'wp-admin/includes/' . $f;
+                }
+            }
+        }
+        add_filter('request_filesystem_credentials', [$this, 'grant_filesystem'], 10, 2);
+        try {
+            $r = delete_plugins([$file]);
+        } finally {
+            remove_filter('request_filesystem_credentials', [$this, 'grant_filesystem'], 10);
+        }
+        if (is_wp_error($r) || $r === false || $this->plugin_file($slug) !== null) {
+            $this->queue_command_result($id, 'failed', is_wp_error($r) ? $r->get_error_message() : 'Suppression refusée par WordPress.');
+            return;
+        }
+        $this->queue_command_result($id, 'success');
+    }
+
+    /** Installation depuis le répertoire officiel uniquement (le paquet doit venir de downloads.wordpress.org). */
+    private function install_plugin($id, $slug, $file) {
+        if ($file !== null) {
+            $this->queue_command_result($id, 'success', 'déjà installée');
+            return;
+        }
+        foreach (['plugin-install.php', 'file.php', 'misc.php', 'class-wp-upgrader.php'] as $f) {
+            if (file_exists(ABSPATH . 'wp-admin/includes/' . $f)) {
+                require_once ABSPATH . 'wp-admin/includes/' . $f;
+            }
+        }
+        if (!function_exists('plugins_api') || !class_exists('\Plugin_Upgrader')) {
+            $this->queue_command_result($id, 'failed', "Le module d'installation de WordPress est indisponible.");
+            return;
+        }
+        $api = plugins_api('plugin_information', ['slug' => $slug, 'fields' => ['sections' => false]]);
+        if (is_wp_error($api) || !is_object($api) || empty($api->download_link)) {
+            $this->queue_command_result($id, 'failed', 'Extension « ' . $slug . ' » inconnue du répertoire wordpress.org.');
+            return;
+        }
+        if (strpos((string) $api->download_link, 'https://downloads.wordpress.org/') !== 0) {
+            $this->queue_command_result($id, 'failed', 'Paquet refusé : il ne vient pas de downloads.wordpress.org.');
+            return;
+        }
+        if (!$this->disk_writable(WP_PLUGIN_DIR)) {
+            $this->queue_command_result($id, 'failed', "Le dossier des extensions n'est pas accessible en écriture.");
+            return;
+        }
+        if (!defined('FS_METHOD')) {
+            define('FS_METHOD', 'direct');
+        }
+        add_filter('request_filesystem_credentials', [$this, 'grant_filesystem'], 10, 2);
+        try {
+            $upgrader = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
+            $r = $upgrader->install($api->download_link);
+        } catch (\Throwable $e) {
+            $r = new WP_Error('ssm', $e->getMessage());
+        } finally {
+            remove_filter('request_filesystem_credentials', [$this, 'grant_filesystem'], 10);
+        }
+        if (is_wp_error($r) || $r === false || $this->plugin_file($slug) === null) {
+            $this->queue_command_result($id, 'failed', is_wp_error($r) ? $r->get_error_message() : "WordPress n'a pas installé l'extension.");
+            return;
+        }
+        $this->queue_command_result($id, 'success', 'installée, non activée');
+    }
+
+    // === Sauvegarde du site vers le stockage de SSM (URL pré-signée) ===
+
+    /**
+     * Exporte la base (database.sql) et les fichiers (wp-config.php, wp-content) dans une archive
+     * zip, la dépose sur l'URL reçue, et rapporte taille et empreinte. Rien ne passe par SSM.
+     * Le dossier de travail est protégé et vidé à la fin, quoi qu'il arrive.
+     */
+    private function backup_site($id, $params) {
+        $url = isset($params['upload_url']) ? (string) $params['upload_url'] : '';
+        $max = isset($params['max_bytes']) ? (int) $params['max_bytes'] : 5368709120;
+        $uploads = !isset($params['include_uploads']) || $params['include_uploads'];
+        if (strpos($url, 'https://') !== 0 && strpos($url, 'http://') !== 0) {
+            $this->queue_command_result($id, 'failed', 'Adresse de dépôt invalide.');
+            return;
+        }
+        if (!class_exists('ZipArchive')) {
+            $this->queue_command_result($id, 'failed', "L'extension PHP zip est requise pour sauvegarder.");
+            return;
+        }
+        @set_time_limit(0);
+        @ignore_user_abort(true);
+        $dir = WP_CONTENT_DIR . '/' . self::BACKUP_TMP;
+        $this->remove_tree($dir);
+        if (!@mkdir($dir, 0700, true) && !is_dir($dir)) {
+            $this->queue_command_result($id, 'failed', 'Dossier de travail impossible à créer dans wp-content.');
+            return;
+        }
+        @file_put_contents($dir . '/index.php', "<?php\n// Silence.\n");
+        @file_put_contents($dir . '/.htaccess', "Require all denied\nDeny from all\n");
+        try {
+            $sql = $dir . '/database.sql';
+            $tables = $this->dump_database($sql);
+            $zip_path = $dir . '/site.zip';
+            $zip = new ZipArchive();
+            if ($zip->open($zip_path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+                throw new RuntimeException("Archive impossible à créer.");
+            }
+            $zip->addFile($sql, 'database.sql');
+            $config = is_file(ABSPATH . 'wp-config.php') ? ABSPATH . 'wp-config.php' : dirname(ABSPATH) . '/wp-config.php';
+            if (is_file($config)) {
+                $zip->addFile($config, 'wp-config.php');
+            }
+            $files = $this->zip_tree($zip, WP_CONTENT_DIR, 'wp-content', $this->backup_excludes($uploads));
+            $zip->close();
+            $size = (int) filesize($zip_path);
+            if ($size > $max) {
+                throw new RuntimeException('Archive de ' . round($size / 1048576) . ' Mo : au-delà de la limite de dépôt.');
+            }
+            $sha = hash_file('sha256', $zip_path);
+            $up = $this->upload($url, $zip_path, $size);
+            if (!$up['ok']) {
+                throw new RuntimeException('Dépôt refusé : ' . $up['error']);
+            }
+            $this->queue_command_result($id, 'success', null,
+                ['size_bytes' => $size, 'sha256' => $sha, 'files' => $files + 1, 'tables' => $tables]);
+        } catch (\Throwable $e) {
+            $this->queue_command_result($id, 'failed', $e->getMessage());
+        } finally {
+            $this->remove_tree($dir);
+        }
+    }
+
+    private function backup_excludes($uploads) {
+        $ex = ['cache', self::BACKUP_TMP, 'upgrade', 'upgrade-temp-backup', 'updraft', 'ai1wm-backups', 'backup-db',
+               'wpvividbackups', 'backups-dup-lite', 'backups-dup-pro', 'et-cache', 'plugins/' . self::BACKUP_DIR, 'debug.log'];
+        if (!$uploads) {
+            $ex[] = 'uploads';
+        }
+        return $ex;
+    }
+
+    /** Ajoute un dossier à l'archive (chemins relatifs à wp-content exclus). Renvoie le nombre de fichiers. */
+    private function zip_tree($zip, $root, $prefix, $excludes, $rel = '') {
+        $count = 0;
+        $items = @scandir($root . ($rel !== '' ? '/' . $rel : ''));
+        if ($items === false) {
+            return 0;
+        }
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+            $path_rel = $rel !== '' ? $rel . '/' . $item : $item;
+            if (in_array($path_rel, $excludes, true)) {
+                continue;
+            }
+            $full = $root . '/' . $path_rel;
+            if (is_link($full)) {
+                continue;     // un lien pourrait sortir de wp-content
+            }
+            if (is_dir($full)) {
+                $count += $this->zip_tree($zip, $root, $prefix, $excludes, $path_rel);
+            } elseif (is_readable($full)) {
+                $zip->addFile($full, $prefix . '/' . $path_rel);
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    private static function sql_value($v) {
+        if ($v === null) {
+            return 'NULL';
+        }
+        return "'" . str_replace(["\\", "\0", "\n", "\r", "'", "\x1a"], ["\\\\", "\\0", "\\n", "\\r", "\\'", "\\Z"], (string) $v) . "'";
+    }
+
+    /** Export SQL des tables de WordPress (préfixe du site), par lots. Renvoie le nombre de tables. */
+    private function dump_database($path) {
+        global $wpdb;
+        $fh = fopen($path, 'wb');
+        if (!$fh) {
+            throw new RuntimeException("Export de la base impossible (écriture).");
+        }
+        fwrite($fh, "-- Export SSM Connector " . SSM_CONNECTOR_VERSION . ' du ' . gmdate('Y-m-d H:i:s') . " UTC\n"
+            . "SET NAMES utf8mb4;\nSET foreign_key_checks = 0;\n\n");
+        $like = str_replace(['\\', '_', '%'], ['\\\\', '\\_', '\\%'], $wpdb->prefix) . '%';
+        $tables = $wpdb->get_col("SHOW TABLES LIKE '" . str_replace("'", "''", $like) . "'");
+        $n = 0;
+        foreach ((array) $tables as $table) {
+            $table = str_replace('`', '', (string) $table);
+            $create = $wpdb->get_row("SHOW CREATE TABLE `$table`", ARRAY_N);
+            if (!is_array($create) || !isset($create[1])) {
+                continue;
+            }
+            fwrite($fh, "DROP TABLE IF EXISTS `$table`;\n" . $create[1] . ";\n\n");
+            for ($offset = 0; ; $offset += 500) {
+                $rows = $wpdb->get_results("SELECT * FROM `$table` LIMIT $offset, 500", ARRAY_A);
+                if (!$rows) {
+                    break;
+                }
+                foreach ($rows as $row) {
+                    fwrite($fh, "INSERT INTO `$table` VALUES (" . implode(',', array_map([__CLASS__, 'sql_value'], array_values($row))) . ");\n");
+                }
+                if (count($rows) < 500) {
+                    break;
+                }
+            }
+            fwrite($fh, "\n");
+            $n++;
+        }
+        fwrite($fh, "SET foreign_key_checks = 1;\n");
+        fclose($fh);
+        return $n;
+    }
+
+    /** PUT de l'archive vers l'URL pré-signée, en flux (pas de chargement en mémoire). */
+    private function upload($url, $path, $size) {
+        if (self::$uploader !== null) {
+            return call_user_func(self::$uploader, $url, $path, $size);
+        }
+        if (!function_exists('curl_init')) {
+            return ['ok' => false, 'error' => "l'extension PHP curl est requise"];
+        }
+        $fp = fopen($path, 'rb');
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_UPLOAD => true, CURLOPT_INFILE => $fp, CURLOPT_INFILESIZE => $size,
+            CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 3600, CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/zip'],
+        ]);
+        $body = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+        fclose($fp);
+        if ($body === false) {
+            return ['ok' => false, 'error' => 'réseau : ' . $err];
+        }
+        return $code >= 200 && $code < 300 ? ['ok' => true, 'error' => null]
+            : ['ok' => false, 'error' => 'HTTP ' . $code . ' ' . $this->cut(strip_tags((string) $body), 160)];
+    }
+
+    // === Erreurs PHP ===
+
+    private function relative($text) {
+        $text = (string) $text;
+        foreach (array_unique([ABSPATH, function_exists('realpath') ? (string) realpath(ABSPATH) . '/' : '']) as $root) {
+            if ($root !== '' && $root !== '/') {
+                $text = str_replace($root, '', $text);
+            }
+        }
+        return $text;
+    }
+
+    /** Fonction d'arrêt : une erreur fatale de cette requête est mise de côté pour SSM. */
+    public function capture_fatal() {
+        $e = error_get_last();
+        if (!is_array($e) || !in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
+            return;
+        }
+        if ($this->debug_log_path() !== null) {
+            return;   // PHP l'écrit déjà dans le journal, lu au heartbeat : pas de double comptage
+        }
+        try {
+            $this->record_php_error($e['type'] === E_PARSE ? 'parse' : 'fatal', $e['message'], $e['file'], $e['line']);
+        } catch (\Throwable $x) {
+            // la base elle-même peut être la cause : on n'aggrave rien
+        }
+    }
+
+    public function record_php_error($level, $message, $file, $line, $count = 1, $when = null) {
+        $all = get_option(self::OPT_PHP_ERRORS, []);
+        if (!is_array($all)) {
+            $all = [];
+        }
+        $message = (string) strtok((string) $message, "\n");
+        // « … in /chemin/fichier.php:12 » : le fichier et la ligne ont leurs propres champs
+        if (preg_match('/^(.*) in (\S+?)(?: on line (\d+)|:(\d+))\s*$/', $message, $f)) {
+            $message = $f[1];
+            if ($file === null) {
+                $file = $f[2];
+                $line = (int) ($f[3] !== '' ? $f[3] : $f[4]);
+            }
+        }
+        $message = $this->cut($this->relative($message), 1000);
+        $file = $file !== null ? $this->cut($this->relative($file), 300) : null;
+        $key = md5($level . '|' . $message . '|' . $file . '|' . $line);
+        $at = gmdate('c', $when ?: time());
+        if (isset($all[$key])) {
+            $all[$key]['count'] += $count;
+            $all[$key]['last_seen'] = $at;
+        } elseif (count($all) < self::PHP_ERRORS_MAX) {
+            $all[$key] = ['level' => $level, 'message' => $message !== '' ? $message : '(sans message)', 'file' => $file,
+                          'line' => $line !== null ? (int) $line : null, 'count' => $count, 'last_seen' => $at];
+        } else {
+            return;
+        }
+        update_option(self::OPT_PHP_ERRORS, $all, false);
+    }
+
+    /** Lit la suite du journal de PHP (WP_DEBUG_LOG, sinon error_log) depuis la dernière lecture. */
+    /** Le journal où PHP écrit ses erreurs, s'il est lisible : WP_DEBUG_LOG, sinon error_log. */
+    public function debug_log_path() {
+        $path = null;
+        if (defined('WP_DEBUG_LOG') && WP_DEBUG_LOG) {
+            $path = is_string(WP_DEBUG_LOG) ? WP_DEBUG_LOG : WP_CONTENT_DIR . '/debug.log';
+        } elseif (($p = ini_get('error_log')) && is_string($p)) {
+            $path = $p;
+        }
+        return ($path && is_file($path) && is_readable($path)) ? $path : null;
+    }
+
+    public function read_debug_log() {
+        $path = $this->debug_log_path();
+        if ($path === null) {
+            return;
+        }
+        clearstatcache(true, $path);   // sinon filesize() rend la taille mise en cache par PHP
+        $size = (int) filesize($path);
+        $offset = (int) get_option(self::OPT_LOG_OFFSET, -1);
+        if ($offset < 0 || $offset > $size) {
+            $offset = max(0, $size - self::LOG_READ_MAX);   // premier passage, ou journal vidé
+        }
+        $fh = @fopen($path, 'rb');
+        if (!$fh) {
+            return;
+        }
+        fseek($fh, $offset);
+        $chunk = (string) fread($fh, min(self::LOG_READ_MAX, max(0, $size - $offset)));
+        fclose($fh);
+        $end = strrpos($chunk, "\n");
+        if ($end === false) {
+            return;
+        }
+        $chunk = substr($chunk, 0, $end + 1);
+        update_option(self::OPT_LOG_OFFSET, $offset + strlen($chunk), false);
+        $levels = ['fatal error' => 'fatal', 'catchable fatal error' => 'fatal', 'recoverable fatal error' => 'fatal',
+                   'parse error' => 'parse', 'warning' => 'warning', 'notice' => 'notice', 'deprecated' => 'deprecated'];
+        foreach (explode("\n", $chunk) as $l) {
+            if (!preg_match('/^\[([^\]]+)\] PHP ([A-Za-z ]+?):\s+(.*)$/', $l, $m)) {
+                continue;
+            }
+            $level = isset($levels[strtolower($m[2])]) ? $levels[strtolower($m[2])] : null;
+            if ($level === null) {
+                continue;
+            }
+            $msg = $m[3];
+            $file = null;
+            $line = null;
+            if (preg_match('/^(.*) in (\S+?)(?: on line (\d+)|:(\d+))\s*$/', $msg, $f)) {
+                $msg = $f[1];
+                $file = $f[2];
+                $line = (int) ($f[3] !== '' ? $f[3] : $f[4]);
+            }
+            $ts = strtotime($m[1]);
+            $this->record_php_error($level, $msg, $file, $line, 1, $ts ?: null);
+        }
+    }
+
+    public function take_php_errors() {
+        try {
+            $this->read_debug_log();
+        } catch (\Throwable $e) {
+            // un journal illisible n'empêche pas le heartbeat
+        }
+        $all = get_option(self::OPT_PHP_ERRORS, []);
+        delete_option(self::OPT_PHP_ERRORS);
+        return is_array($all) ? array_slice(array_values($all), 0, self::PHP_ERRORS_MAX) : [];
+    }
+
+    // === Connexion directe depuis SSM (seulement si SSM_CONNECTOR_ALLOW_LOGIN) ===
+
+    public function login_key() {
+        $stored = get_option(self::OPT_LOGIN_KEY, '');
+        return is_string($stored) && $stored !== '' ? self::reveal($stored) : null;
+    }
+
+    private static function b64url_decode($s) {
+        return base64_decode(strtr($s, '-_', '+/') . str_repeat('=', (4 - strlen($s) % 4) % 4), true);
+    }
+
+    /** Vérifie un jeton de connexion. Renvoie l'utilisateur à connecter, ou la raison du refus. */
+    public function verify_login_token($token) {
+        if (!self::login_allowed()) {
+            return 'connexion directe désactivée sur ce site';
+        }
+        $key = $this->login_key();
+        if (!$key) {
+            return 'clé de connexion pas encore reçue de SSM';
+        }
+        $parts = explode('.', (string) $token);
+        if (count($parts) !== 2) {
+            return 'jeton illisible';
+        }
+        $expected = rtrim(strtr(base64_encode(hash_hmac('sha256', $parts[0], $key, true)), '+/', '-_'), '=');
+        if (!hash_equals($expected, $parts[1])) {
+            return 'signature invalide';
+        }
+        $claims = json_decode((string) self::b64url_decode($parts[0]), true);
+        if (!is_array($claims) || !isset($claims['exp'], $claims['n'])) {
+            return 'jeton incomplet';
+        }
+        $now = time();
+        if ($now > (int) $claims['exp']) {
+            return 'lien expiré (60 secondes)';
+        }
+        if ((int) $claims['exp'] - $now > 120) {
+            return 'expiration invalide';
+        }
+        $site_id = (int) get_option(self::OPT_SITE_ID, 0);
+        if ($site_id && isset($claims['s']) && (int) $claims['s'] !== $site_id) {
+            return 'lien destiné à un autre site';
+        }
+        $nonce_key = 'ssm_login_' . md5((string) $claims['n']);
+        if (get_transient($nonce_key)) {
+            return 'lien déjà utilisé';
+        }
+        set_transient($nonce_key, 1, 300);
+        $user = $this->login_user();
+        if (!$user) {
+            return 'aucun administrateur à connecter';
+        }
+        $log = get_option(self::OPT_LOGIN_LOG, []);
+        $log = is_array($log) ? $log : [];
+        array_unshift($log, ['at' => current_time('mysql'), 'by' => substr((string) ($claims['u'] ?? ''), 0, 64), 'as' => $user->user_login]);
+        update_option(self::OPT_LOGIN_LOG, array_slice($log, 0, 20), false);
+        return $user;
+    }
+
+    /** L'administrateur désigné (SSM_CONNECTOR_LOGIN_USER), sinon le premier administrateur. Jamais un compte choisi par SSM. */
+    private function login_user() {
+        if (defined('SSM_CONNECTOR_LOGIN_USER') && SSM_CONNECTOR_LOGIN_USER) {
+            $u = get_user_by('login', (string) SSM_CONNECTOR_LOGIN_USER);
+            if (!$u) {
+                $u = get_user_by('email', (string) SSM_CONNECTOR_LOGIN_USER);
+            }
+            return $u ?: null;
+        }
+        $admins = get_users(['role' => 'administrator', 'orderby' => 'ID', 'order' => 'ASC', 'number' => 1]);
+        return $admins ? $admins[0] : null;
+    }
+
+    /** Crochet login_init (posé seulement si la connexion directe est activée). */
+    public function handle_login() {
+        if (!isset($_GET['action']) || $_GET['action'] !== 'ssm_login') {
+            return;
+        }
+        $token = isset($_GET['ssm_token']) ? (string) wp_unslash($_GET['ssm_token']) : '';
+        $user = $this->verify_login_token($token);
+        if (is_string($user)) {
+            wp_die(esc_html('Lien de connexion SSM refusé : ' . $user . '. Demandez-en un nouveau depuis SSM.'), 'SSM', ['response' => 403]);
+        }
+        wp_set_current_user($user->ID);
+        wp_set_auth_cookie($user->ID, false, is_ssl());
+        wp_safe_redirect(admin_url());
+        exit;
     }
 
     /** Fichier principal d'une extension à partir de son dossier. Null si elle n'est pas installée. */
     private function plugin_file($slug) {
         foreach (array_keys(get_plugins()) as $file) {
-            if (strpos($file, $slug . '/') === 0) {
+            // dossier (« akismet/akismet.php ») ou extension d'un seul fichier (« hello.php »)
+            if (strpos($file, $slug . '/') === 0 || $file === $slug . '.php') {
                 return $file;
             }
         }
@@ -578,7 +1462,7 @@ class SSM_Connector {
             require_once ABSPATH . 'wp-admin/includes/plugin.php';
         }
         foreach (get_plugins() as $file => $data) {
-            if (strpos($file, $slug . '/') === 0) {
+            if (strpos($file, $slug . '/') === 0 || $file === $slug . '.php') {
                 return isset($data['Version']) ? (string) $data['Version'] : null;
             }
         }
@@ -595,7 +1479,8 @@ class SSM_Connector {
 
     private function backup_plugin($slug) {
         $source = WP_PLUGIN_DIR . '/' . $slug;
-        if (!is_dir($source) || !$this->disk_writable(WP_PLUGIN_DIR)) {
+        $single = !is_dir($source) && is_file($source . '.php');   // extension d'un seul fichier
+        if ((!is_dir($source) && !$single) || !$this->disk_writable(WP_PLUGIN_DIR)) {
             return false;
         }
         $base = WP_PLUGIN_DIR . '/' . self::BACKUP_DIR;
@@ -603,7 +1488,11 @@ class SSM_Connector {
             return false;
         }
         $dest = $base . '/' . $slug . '-' . gmdate('Ymd-His');
-        if (!$this->copy_tree($source, $dest)) {
+        if ($single) {
+            if ((!@mkdir($dest, 0755, true) && !is_dir($dest)) || !@copy($source . '.php', $dest . '/' . self::SINGLE_FILE)) {
+                return false;
+            }
+        } elseif (!$this->copy_tree($source, $dest)) {
             return false;
         }
         $this->prune_backups($slug);
@@ -624,8 +1513,23 @@ class SSM_Connector {
     }
 
     private function restore_plugin($slug, $backup) {
+        $ok = $this->restore_plugin_files($slug, $backup);
+        $fichier = $ok ? $this->plugin_file($slug) : null;
+        if ($fichier !== null && !is_plugin_active($fichier) && in_array($fichier, (array) $this->active_before_update, true)) {
+            activate_plugin($fichier, '', false, true);   // l'ancienne version reprend sa place, active
+        }
+        return $ok;
+    }
+
+    /** Extensions actives au moment de la dernière mise à jour (pour les réactiver après un retour arrière). */
+    private $active_before_update = [];
+
+    private function restore_plugin_files($slug, $backup) {
         if (!$backup || !is_dir($backup)) {
             return false;
+        }
+        if (is_file($backup . '/' . self::SINGLE_FILE)) {
+            return @copy($backup . '/' . self::SINGLE_FILE, WP_PLUGIN_DIR . '/' . $slug . '.php');
         }
         $dest = WP_PLUGIN_DIR . '/' . $slug;
         $this->remove_tree($dest);
@@ -703,9 +1607,15 @@ class SSM_Connector {
         if (function_exists('add_filter')) {
             add_filter('request_filesystem_credentials', [$this, 'grant_filesystem'], 10, 2);
         }
+        // Plugin_Upgrader::upgrade() attend le fichier principal (« akismet/akismet.php »), pas le
+        // dossier : avec le dossier, WordPress refuse sans détail (constaté sur un vrai site).
+        $fichier = $this->plugin_file($slug);
+        if ($fichier === null) {
+            return 'Extension « ' . $slug . ' » introuvable sur ce site.';
+        }
         try {
             $upgrader = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
-            $resultat = $upgrader->upgrade($slug);
+            $resultat = $upgrader->upgrade($fichier);
         } catch (\Throwable $e) {
             return 'Erreur pendant la mise à jour : ' . $e->getMessage();
         } finally {
@@ -758,7 +1668,14 @@ class SSM_Connector {
                 $ok = $code >= 200 && $code < 300;
                 $message = $ok ? 'Inventaire accepté par SSM Core.' : $this->describe_http_error($code, $result['body']);
                 if ($ok) {
-                    $this->apply_commands(is_array($result['body']['commands'] ?? null) ? $result['body']['commands'] : []);
+                    $body = is_array($result['body']) ? $result['body'] : [];
+                    if (isset($body['site_id'])) {
+                        update_option(self::OPT_SITE_ID, (int) $body['site_id'], false);
+                    }
+                    if (self::login_allowed() && !empty($body['login_key']) && is_string($body['login_key'])) {
+                        update_option(self::OPT_LOGIN_KEY, self::protect($body['login_key']), false);
+                    }
+                    $this->apply_commands(is_array($body['commands'] ?? null) ? $body['commands'] : []);
                 }
             }
         } catch (\Throwable $e) {
@@ -925,7 +1842,14 @@ class SSM_Connector {
                 ? '<li>Connexion chiffrée (https), certificat vérifié.</li>'
                 : '<li><strong>Connexion en http</strong> sur un réseau privé : acceptable en interne, déconseillé sinon.</li>';
         }
-        echo '<li>Envoyé à SSM : versions de WordPress, de PHP et de la base, serveur web, nom de la machine, chemin d\'installation, extensions et thèmes (versions, état, mises à jour). Rien d\'autre : ni utilisateurs, ni contenu, ni e-mails.</li>';
+        echo '<li>Envoyé à SSM : versions de WordPress, de PHP et de la base, serveur web, nom de la machine, chemin d\'installation, extensions et thèmes (versions, état, mises à jour), erreurs PHP (chemins relatifs au site). Rien d\'autre : ni utilisateurs, ni contenu, ni e-mails.</li>';
+        echo '<li>Exécuté à la demande de SSM : mises à jour (sauvegarde avant, contrôle du site après, retour à la version précédente si le site casse), activation, désactivation, installation depuis wordpress.org, sauvegarde du site vers le stockage de l\'agence.</li>';
+        if (self::login_allowed()) {
+            echo '<li><strong>Connexion directe activée</strong> (<code>SSM_CONNECTOR_ALLOW_LOGIN</code>) : un lien signé par SSM, valable 60 secondes et une seule fois, ouvre une session d\'administrateur. '
+                . ($this->login_key() ? 'Clé reçue.' : 'Clé pas encore reçue (au prochain envoi).') . ' Retirez la constante pour fermer cette porte.</li>';
+        } else {
+            echo '<li>Connexion directe depuis SSM : désactivée. Pour l\'activer, ajoutez <code>define(\'SSM_CONNECTOR_ALLOW_LOGIN\', true);</code> dans wp-config.php.</li>';
+        }
         echo '</ul>';
 
         $this->render_update_section();

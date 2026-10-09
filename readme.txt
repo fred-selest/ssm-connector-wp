@@ -4,10 +4,10 @@ Tags: monitoring, maintenance, inventory
 Requires at least: 5.5
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.4.0
+Stable tag: 0.5.0
 License: Private
 
-Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core. N'ouvre aucune porte sur le site.
+Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande. N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez.
 
 == Description ==
 
@@ -17,7 +17,13 @@ Elle envoie à SSM Core, toutes les heures :
 * la version de WordPress, de PHP et de la base de données, le serveur web, le nom de la machine ;
 * les extensions et les thèmes, avec les mises à jour disponibles.
 
-Rien d'autre : ni utilisateurs, ni contenu, ni e-mails. L'extension n'expose aucune route et n'écoute rien ; elle ne modifie rien sur le site.
+* les erreurs PHP (fatales, et celles du journal de PHP), avec des chemins relatifs au site.
+
+Rien d'autre : ni utilisateurs, ni contenu, ni e-mails.
+
+À la demande de SSM (et seulement à sa demande) : mises à jour des extensions, des thèmes et du cœur (sauvegarde avant, contrôle de la page d'accueil après, retour à la version précédente si le site casse), activation, désactivation, installation depuis wordpress.org, suppression d'une extension inactive, sauvegarde complète du site vers le stockage S3 de l'agence.
+
+Connexion directe depuis SSM : désactivée par défaut. `define('SSM_CONNECTOR_ALLOW_LOGIN', true);` dans wp-config.php l'active (lien signé, 60 secondes, usage unique).
 
 Sécurité : token chiffré dans la base (ou défini dans wp-config.php, hors base), https obligatoire hors réseau privé, certificat vérifié.
 
@@ -42,6 +48,10 @@ En ligne de commande : `echo "$TOKEN" | wp ssm connect https://ssm.exemple.fr`.
 6. Configuration fixée dans wp-config.php : champs verrouillés, token hors base de données.
 
 == Changelog ==
+
+= 0.5.0 =
+* Mises à jour des thèmes et du cœur ; contrôle du site après chaque mise à jour, retour arrière automatique s'il casse.
+* Actions sur les extensions, erreurs PHP, sauvegarde du site vers S3, connexion directe (à activer).
 
 = 0.4.0 =
 * Mise a jour des extensions demandee par SSM Core, avec sauvegarde prealable et restauration automatique en cas d'echec.

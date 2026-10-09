@@ -4,6 +4,9 @@
 
 define('ABSPATH', sys_get_temp_dir() . '/ssm-fake-wp/');
 define('WP_PLUGIN_DIR', sys_get_temp_dir() . '/ssm-fake-wp-plugins/');
+define('WP_CONTENT_DIR', sys_get_temp_dir() . '/ssm-fake-wp-content');
+define('ARRAY_A', 'ARRAY_A');
+define('ARRAY_N', 'ARRAY_N');
 // `queue_result` est appele par les tests : on le rend accessible.
 $GLOBALS['ssm_upgrade_ok'] = true;     // l'upgrader simulé réussit-il ?
 $GLOBALS['ssm_writable'] = true;        // wp-content est-il inscriptible ?
@@ -64,7 +67,69 @@ function update_option($key, $value, $autoload = null) { $GLOBALS['ssm_opts'][$k
 function delete_option($key) { unset($GLOBALS['ssm_opts'][$key]); return true; }
 function get_site_transient($key) { return array_key_exists($key, $GLOBALS['ssm_transients']) ? $GLOBALS['ssm_transients'][$key] : false; }
 function get_plugins() { return $GLOBALS['ssm_plugins']; }
-function is_plugin_active($path) { return strpos($path, 'inactive') === false; }
+function is_plugin_active($path) {
+    if (isset($GLOBALS['ssm_active'][$path])) {
+        return $GLOBALS['ssm_active'][$path];
+    }
+    return strpos($path, 'inactive') === false;
+}
+function activate_plugin($path, $redirect = '', $network = false, $silent = false) {
+    if (!empty($GLOBALS['ssm_activation_fails'])) {
+        return new WP_Error('plugin_activation', "erreur fatale à l'activation");
+    }
+    $GLOBALS['ssm_active'][$path] = true;
+    return null;
+}
+function deactivate_plugins($paths) { foreach ((array) $paths as $p) { $GLOBALS['ssm_active'][$p] = false; } }
+function delete_plugins($paths) {
+    foreach ((array) $paths as $p) { unset($GLOBALS['ssm_plugins'][$p]); }
+    return true;
+}
+function plugins_api($action, $args) {
+    if ($args['slug'] === 'inconnue') {
+        return new WP_Error('plugins_api_failed', 'Plugin not found.');
+    }
+    return (object) ['download_link' => $GLOBALS['ssm_download_link'] ?? 'https://downloads.wordpress.org/plugin/' . $args['slug'] . '.zip'];
+}
+function remove_filter($hook, $cb, $priority = 10) { return true; }
+function home_url($path = '') { return 'https://exemple.test' . $path; }
+function add_query_arg($k, $v, $url) { return $url . (strpos($url, '?') === false ? '?' : '&') . $k . '=' . $v; }
+function wp_rand($a = 0, $b = 0) { return mt_rand($a, $b); }
+function wp_login_url() { return 'https://exemple.test/wp-login.php'; }
+function get_theme_root() { return sys_get_temp_dir() . '/ssm-fake-wp-themes'; }
+function get_locale() { return 'fr_FR'; }
+function find_core_update($version, $locale) { return (object) ['current' => $version, 'locale' => $locale]; }
+function get_transient($k) { return $GLOBALS['ssm_transients_wp'][$k] ?? false; }
+function set_transient($k, $v, $ttl = 0) { $GLOBALS['ssm_transients_wp'][$k] = $v; return true; }
+function get_user_by($field, $value) {
+    foreach ($GLOBALS['ssm_users'] as $u) { if ($field === 'login' && $u->user_login === $value) { return $u; } }
+    return false;
+}
+function get_users($args) { return $GLOBALS['ssm_users']; }
+function wp_set_current_user($id) { $GLOBALS['ssm_current_user'] = $id; }
+function wp_set_auth_cookie($id, $remember = false, $secure = '') { $GLOBALS['ssm_auth_cookie'] = $id; }
+class Theme_Upgrader {
+    public function __construct($skin = null) {}
+    public function upgrade($slug) {
+        if (!$GLOBALS['ssm_upgrade_ok']) {
+            return new WP_Error('upgrader', 'échec simulé du thème.');
+        }
+        if ($GLOBALS['ssm_theme_upgrade_version'] !== null) {
+            file_put_contents(get_theme_root() . '/' . $slug . '/style.css', "/*\n * Version: " . $GLOBALS['ssm_theme_upgrade_version'] . "\n */\n");
+        }
+        return true;
+    }
+}
+class Core_Upgrader {
+    public function __construct($skin = null) {}
+    public function upgrade($update) {
+        if (!$GLOBALS['ssm_upgrade_ok']) {
+            return new WP_Error('upgrader', 'échec simulé du cœur.');
+        }
+        file_put_contents(ABSPATH . 'wp-includes/version.php', "<?php\n\$wp_version = '" . $update->current . "';\n");
+        return $update->current;
+    }
+}
 function wp_get_themes() { return $GLOBALS['ssm_themes']; }
 function get_stylesheet() { return 'child'; }
 function get_bloginfo($what) { return '6.6.1'; }
@@ -98,10 +163,29 @@ class Automatic_Upgrader_Skin {}
 class Plugin_Upgrader {
     public function __construct($skin = null) {}
     public function upgrade($plugin) {
+        // comme le vrai : le fichier principal de l'extension, sinon refus sans détail
+        if (!isset($GLOBALS['ssm_plugins'][$plugin])) {
+            return false;
+        }
         if (!$GLOBALS['ssm_upgrade_ok']) {
             return new WP_Error('upgrader', 'échec simulé du paquet.');
         }
         $GLOBALS['ssm_upgraded'][] = $plugin;
+        if (!empty($GLOBALS['ssm_deactivate_on_upgrade'])) {
+            $GLOBALS['ssm_active'][$plugin] = false;   // ce que fait WordPress hors tâche planifiée
+        }
+        if (!empty($GLOBALS['ssm_plugin_upgrade_version'])) {
+            foreach ($GLOBALS['ssm_plugins'] as $f => $d) {
+                if ($f === $plugin) {
+                    $GLOBALS['ssm_plugins'][$f]['Version'] = $GLOBALS['ssm_plugin_upgrade_version'];
+                }
+            }
+        }
+        return true;
+    }
+    public function install($package) {
+        $slug = basename($package, '.zip');
+        $GLOBALS['ssm_plugins'][$slug . '/' . $slug . '.php'] = ['Name' => $slug, 'Version' => '1.0'];
         return true;
     }
 }
@@ -120,6 +204,18 @@ class WP_Error {
 
 class FakeWpdb {
     public $users = 'wp_users';
+    public $prefix = 'wp_';
+    public function get_col($sql) { return ['wp_options', 'wp_posts']; }
+    public function get_row($sql, $output = null) {
+        preg_match('/`([^`]+)`/', $sql, $m);
+        return [$m[1], "CREATE TABLE `{$m[1]}` (id int)"];
+    }
+    public function get_results($sql, $output = null) {
+        if (strpos($sql, 'LIMIT 0,') === false) {
+            return [];
+        }
+        return [['id' => 1, 'v' => "l'été\n"], ['id' => 2, 'v' => null]];
+    }
     public function db_version() { return '8.0.36'; }
     public function get_var($sql) { return '7'; }
 }
@@ -189,10 +285,38 @@ function ssm_reset() {
     SSM_Connector::$disk_check = $GLOBALS['ssm_writable']
         ? null : function ($path) { return false; };
     $GLOBALS['wp_filesystem'] = new FakeFs();
+    // Contrôle de santé du site après une mise à jour : sain par défaut (les tests le font échouer exprès).
+    SSM_Connector::$health_check = function ($after = false) { return ['ok' => true, 'code' => 200, 'reason' => 'HTTP 200']; };
+    SSM_Connector::$login_allowed = null;
+    SSM_Connector::$uploader = null;
+    $GLOBALS['ssm_transients_wp'] = [];
+    $GLOBALS['ssm_active'] = [];
+    $GLOBALS['ssm_users'] = [(object) ['ID' => 1, 'user_login' => 'admin']];
+    $GLOBALS['ssm_auth_cookie'] = null;
+    $GLOBALS['ssm_theme_upgrade_version'] = null;
+    $GLOBALS['ssm_core_version'] = '6.6.1';
+    $themes = sys_get_temp_dir() . '/ssm-fake-wp-themes';
+    ssm_rmtree($themes);
+    foreach (['twentytwentyfour' => '1.2', 'child' => '0.5'] as $t => $v) {
+        mkdir($themes . '/' . $t, 0755, true);
+        file_put_contents($themes . '/' . $t . '/style.css', "/*\n * Theme Name: $t\n * Version: $v\n */\n");
+    }
+    @mkdir(ABSPATH . 'wp-includes', 0755, true);
+    file_put_contents(ABSPATH . 'wp-includes/version.php', "<?php\n\$wp_version = '6.6.1';\n");
     // Un dossier d'extension minimal, pour que la sauvegarde et la restauration aient de vrai
     // fichiers a copier. Le contenu importe peu ; ce qui compte est qu'un tree existe.
     $plugins = WP_PLUGIN_DIR;
     ssm_rmtree($plugins);
+    ssm_rmtree(WP_CONTENT_DIR);
+    @mkdir(WP_CONTENT_DIR . '/uploads/2026', 0755, true);
+    file_put_contents(WP_CONTENT_DIR . '/uploads/2026/photo.jpg', 'jpeg');
+    @mkdir(WP_CONTENT_DIR . '/cache', 0755, true);
+    file_put_contents(WP_CONTENT_DIR . '/cache/page.html', 'cache');
+    file_put_contents(WP_CONTENT_DIR . '/index.php', '<?php');
+    $GLOBALS['ssm_download_link'] = null;
+    $GLOBALS['ssm_plugin_upgrade_version'] = null;
+    $GLOBALS['ssm_deactivate_on_upgrade'] = false;
+    $GLOBALS['ssm_activation_fails'] = false;
     mkdir($plugins, 0755, true);
     foreach (['akismet', 'woocommerce', 'inactive-demo'] as $slug) {
         mkdir($plugins . '/' . $slug, 0755, true);
