@@ -1054,7 +1054,9 @@ test("erreurs PHP : journal lu par morceaux, chemins relatifs, regroupement", fu
     check(strpos(json_encode($errors), ABSPATH) === false, 'aucun chemin absolu du serveur');
     same($ssm->collect_inventory()['php_errors'], [], 'rien de neuf au heartbeat suivant');
     file_put_contents($log, "[08-Oct-2026 11:00:00 UTC] PHP Parse error:  syntax error in " . ABSPATH . "a.php on line 3\n", FILE_APPEND);
-    same($ssm->collect_inventory()['php_errors'][0]['level'], 'parse', 'seule la suite est lue');
+    $suite = $ssm->collect_inventory()['php_errors'];
+    // en cas d'échec, le journal dit quelle erreur réelle de PHP s'y est glissée (php.ini de production : log_errors=On)
+    same($suite[0]['level'] ?? null, 'parse', 'seule la suite est lue (journal : ' . substr((string) file_get_contents($log), -700) . ')');
     ini_restore('error_log');
 });
 
