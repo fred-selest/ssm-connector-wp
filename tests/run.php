@@ -149,6 +149,26 @@ test("l'inventaire respecte le contrat de SSM Core", function () use ($ssm) {
     check_core_limits($inv);
 });
 
+test("versions publiées : celles des extensions à jour aussi, et l'état recalculé s'il a été effacé", function () use ($ssm) {
+    ssm_reset();
+    $GLOBALS['ssm_plugins'] = ['a/a.php' => ['Name' => 'A', 'Version' => '1.0'], 'b/b.php' => ['Name' => 'B', 'Version' => '2.0'],
+                               'c/c.php' => ['Name' => 'C', 'Version' => '3.0']];
+    $state = (object) ['last_checked' => time(), 'response' => ['a/a.php' => (object) ['new_version' => '1.1']],
+                       'no_update' => ['b/b.php' => (object) ['new_version' => '2.0']]];
+    $GLOBALS['ssm_transients']['update_plugins'] = $state;
+    $by = array_column($ssm->collect_inventory()['extensions'], null, 'slug');
+    same([$by['a']['latest_version'], $by['a']['update_available']], ['1.1', true], 'mise à jour en attente');
+    same([$by['b']['latest_version'], $by['b']['update_available']], ['2.0', false], "à jour : sa version publiée, plus « inconnue »");
+    same($by['c']['latest_version'], null, 'hors wordpress.org (premium) : inconnue, rien de deviné');
+    same(in_array('plugins', $GLOBALS['ssm_refreshed'], true), false, 'état présent : pas de requête vers wordpress.org');
+
+    unset($GLOBALS['ssm_transients']['update_plugins']);   // effacé par WordPress juste après une mise à jour
+    $GLOBALS['ssm_refresh_plugins'] = $state;
+    $by = array_column($ssm->collect_inventory()['extensions'], null, 'slug');
+    same(in_array('plugins', $GLOBALS['ssm_refreshed'], true), true, 'état recalculé');
+    same($by['b']['latest_version'], '2.0', 'et les versions publiées sont là dès cet envoi');
+});
+
 test("données minimales : rien que SSM Core lit, aucune donnée personnelle", function () use ($ssm) {
     $keys = array_keys($ssm->collect_inventory());
     sort($keys);
@@ -1033,8 +1053,13 @@ test("erreurs PHP : journal lu par morceaux, chemins relatifs, regroupement", fu
     same($errors[1]['count'], 2, 'avertissement compté deux fois');
     check(strpos(json_encode($errors), ABSPATH) === false, 'aucun chemin absolu du serveur');
     same($ssm->collect_inventory()['php_errors'], [], 'rien de neuf au heartbeat suivant');
+    $before = file_get_contents($log);
+    $ssm->collect_inventory();
+    same(file_get_contents($log), $before, "rien de neuf : le connecteur n'écrit rien dans le journal (PHP 7.4 : fread de 0 octet)");
     file_put_contents($log, "[08-Oct-2026 11:00:00 UTC] PHP Parse error:  syntax error in " . ABSPATH . "a.php on line 3\n", FILE_APPEND);
-    same($ssm->collect_inventory()['php_errors'][0]['level'], 'parse', 'seule la suite est lue');
+    $suite = $ssm->collect_inventory()['php_errors'];
+    // en cas d'échec, le journal dit quelle erreur réelle de PHP s'y est glissée (php.ini de production : log_errors=On)
+    same($suite[0]['level'] ?? null, 'parse', 'seule la suite est lue (journal : ' . substr((string) file_get_contents($log), -700) . ')');
     ini_restore('error_log');
 });
 
@@ -1196,6 +1221,39 @@ test("connexion directe : case de la page de l'extension et administrateur chois
     core_replies(200, ['site_id' => 7, 'status' => 'accepted', 'commands' => [], 'login_key' => 'z']);
     $ssm->send_heartbeat();
     same(get_option(SSM_Connector::OPT_LOGIN_KEY), false, 'fermée : la clé envoyée par SSM est refusée et effacée');
+});
+
+test("connexion directe : prête dès l'enregistrement de la case, sans attendre deux envois horaires", function () use ($ssm) {
+    ssm_reset();
+    configure();
+    $GLOBALS['ssm_users'] = [(object) ['ID' => 1, 'user_login' => 'admin', 'display_name' => 'Admin']];
+    $envois = [];
+    $GLOBALS['ssm_http'] = function ($url, $args) use (&$envois) {
+        $body = json_decode($args['body'], true);
+        $envois[] = $body['login_key_fingerprint'] ?? null;
+        // SSM : remet la clé tant que l'empreinte ne correspond pas, puis plus rien
+        $fp = substr(hash('sha256', 'cle-de-ssm'), 0, 16);
+        $reply = ['site_id' => 7, 'status' => 'accepted', 'commands' => []];
+        if (($body['login_key_fingerprint'] ?? null) !== $fp) {
+            $reply['login_key'] = 'cle-de-ssm';
+        }
+        return ['code' => 200, 'body' => json_encode($reply)];
+    };
+    $ssm->save_login_settings(true, 1);
+    same($ssm->sync_login_now(), 'Connexion directe ouverte et prête : SSM peut ouvrir une session sur ce site.', 'prête');
+    same(count($envois), 2, 'deux envois tout de suite');
+    same([$envois[0], $envois[1]], [null, substr(hash('sha256', 'cle-de-ssm'), 0, 16)], 'le second annonce la clé reçue au premier');
+
+    core_replies(500, []);
+    same(strpos($ssm->sync_login_now(), 'SSM n\'a pas répondu') !== false, true, 'SSM muet : le message le dit');
+});
+
+test("une nouvelle version de l'extension est annoncée à SSM sans attendre l'envoi horaire", function () use ($ssm) {
+    ssm_reset();
+    $ssm->announce_new_version();
+    same($GLOBALS['ssm_single_events'], [[SSM_Connector::HEARTBEAT_HOOK, ['nouvelle-version']]], 'un envoi immédiat');
+    $ssm->announce_new_version();
+    same(count($GLOBALS['ssm_single_events']), 1, 'une seule fois par version');
 });
 
 // En dernier : une constante PHP ne se retire plus une fois définie.

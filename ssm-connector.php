@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.6.0
+ * Version: 0.6.1
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.6.0');
+define('SSM_CONNECTOR_VERSION', '0.6.1');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -46,6 +46,7 @@ class SSM_Connector {
     const OPT_PHP_ERRORS = 'ssm_php_errors';          // erreurs PHP en attente d'envoi
     const OPT_LOG_OFFSET = 'ssm_debug_log_offset';    // position de lecture du journal de PHP
     const OPT_LOGIN_KEY = 'ssm_login_key';            // clé de connexion directe (chiffrée)
+    const OPT_VERSION_SENT = 'ssm_connector_version_sent';   // dernière version annoncée à SSM
     const OPT_SITE_ID = 'ssm_site_id';                // identifiant du site chez SSM
     const OPT_LOGIN_LOG = 'ssm_login_log';            // dernières connexions directes
     const OPT_LOGIN_ALLOWED = 'ssm_login_allowed';    // case « Autoriser la connexion directe » (page de l'extension)
@@ -145,6 +146,19 @@ class SSM_Connector {
     public function on_loaded() {
         $this->maybe_upgrade();
         $this->schedule_heartbeat();
+        $this->announce_new_version();
+    }
+
+    /**
+     * Après une installation ou une mise à jour de l'extension, un envoi part tout de suite (au prochain passage
+     * de WP-Cron) au lieu d'attendre l'envoi horaire : SSM affiche la nouvelle version dans la minute.
+     */
+    public function announce_new_version() {
+        if (get_option(self::OPT_VERSION_SENT) === SSM_CONNECTOR_VERSION) {
+            return;
+        }
+        update_option(self::OPT_VERSION_SENT, SSM_CONNECTOR_VERSION, false);
+        wp_schedule_single_event(time(), self::HEARTBEAT_HOOK, ['nouvelle-version']);
     }
 
     public function schedule_heartbeat() {
@@ -415,12 +429,34 @@ class SSM_Connector {
         return $value === '' ? null : $value;
     }
 
+    /**
+     * L'état des mises à jour tel que WordPress le calcule. Juste après une mise à jour, WordPress l'efface et ne le
+     * recalcule qu'au prochain passage dans l'administration : sans lui, l'inventaire ne dirait rien des versions
+     * publiées. On le fait recalculer (la même requête vers wordpress.org que WordPress fait deux fois par jour).
+     */
+    private function update_state($transient, $refresh) {
+        $state = get_site_transient($transient);
+        if (!is_object($state) || empty($state->last_checked)) {
+            if (!function_exists($refresh) && is_readable(ABSPATH . 'wp-includes/update.php')) {
+                require_once ABSPATH . 'wp-includes/update.php';   // chargé par WordPress en temps normal
+            }
+            if (function_exists($refresh)) {
+                $refresh();
+                $state = get_site_transient($transient);
+            }
+        }
+        return $state;
+    }
+
     private function collect_plugins() {
         if (!function_exists('get_plugins')) {
             require_once ABSPATH . 'wp-admin/includes/plugin.php';
         }
-        $updates = get_site_transient('update_plugins');
+        $updates = $this->update_state('update_plugins', 'wp_update_plugins');
         $response = (is_object($updates) && isset($updates->response) && is_array($updates->response)) ? $updates->response : [];
+        // WordPress range les extensions à jour dans no_update, avec leur version publiée : sans elles, une extension
+        // à jour n'avait pas de « dernière version », et SSM affichait « versions inconnues » sur un site tout à jour.
+        $current = (is_object($updates) && isset($updates->no_update) && is_array($updates->no_update)) ? $updates->no_update : [];
         $list = [];
         $seen = [];
         foreach (get_plugins() as $path => $data) {
@@ -434,8 +470,8 @@ class SSM_Connector {
             }
             $seen[$slug] = true;
             $latest = null;
-            if (isset($response[$path])) {
-                $info = $response[$path];
+            $info = $response[$path] ?? ($current[$path] ?? null);
+            if ($info !== null) {
                 $latest = is_object($info) ? ($info->new_version ?? null) : (is_array($info) ? ($info['new_version'] ?? null) : null);
             }
             $name = wp_strip_all_tags((string) ($data['Name'] ?? ''));
@@ -455,14 +491,15 @@ class SSM_Connector {
         if (!function_exists('wp_get_themes')) {
             require_once ABSPATH . 'wp-includes/theme.php';
         }
-        $updates = get_site_transient('update_themes');
+        $updates = $this->update_state('update_themes', 'wp_update_themes');
         $response = (is_object($updates) && isset($updates->response) && is_array($updates->response)) ? $updates->response : [];
+        $current = (is_object($updates) && isset($updates->no_update) && is_array($updates->no_update)) ? $updates->no_update : [];
         $active = get_stylesheet();
         $list = [];
         foreach (wp_get_themes() as $slug => $theme) {
             $latest = null;
-            if (isset($response[$slug])) {
-                $info = $response[$slug];
+            $info = $response[$slug] ?? ($current[$slug] ?? null);
+            if ($info !== null) {
                 $latest = is_object($info) ? ($info->new_version ?? null) : (is_array($info) ? ($info['new_version'] ?? null) : null);
             }
             // pour un thème autonome, le « template » est le thème lui-même : seul un thème enfant a un parent
@@ -1325,12 +1362,17 @@ class SSM_Connector {
         if ($offset < 0 || $offset > $size) {
             $offset = max(0, $size - self::LOG_READ_MAX);   // premier passage, ou journal vidé
         }
+        if ($size <= $offset) {
+            // Rien de neuf. PHP 7.4 refuse fread(…, 0) par un avertissement, que PHP écrit… dans ce même journal :
+            // chaque envoi ajoutait une fausse erreur du connecteur au journal du site, et SSM la remontait.
+            return;
+        }
         $fh = @fopen($path, 'rb');
         if (!$fh) {
             return;
         }
         fseek($fh, $offset);
-        $chunk = (string) fread($fh, min(self::LOG_READ_MAX, max(0, $size - $offset)));
+        $chunk = (string) fread($fh, min(self::LOG_READ_MAX, $size - $offset));
         fclose($fh);
         $end = strrpos($chunk, "\n");
         if ($end === false) {
@@ -1941,12 +1983,41 @@ class SSM_Connector {
         return 'Connexion directe ouverte : prête après deux envois à SSM (clé remise, puis confirmée).';
     }
 
+    /**
+     * Ouverture : deux envois tout de suite au lieu d'attendre deux envois horaires (jusqu'à deux heures). Le premier
+     * reçoit la clé de SSM, le second annonce son empreinte : SSM confirme, la connexion directe est prête.
+     */
+    public function sync_login_now() {
+        $later = 'Connexion directe ouverte. SSM n\'a pas répondu : elle sera prête après deux envois horaires '
+            . '(ou deux clics sur « Tester la connexion »).';
+        if (!$this->send_heartbeat()) {
+            return $later;
+        }
+        if (!$this->login_key()) {
+            return 'Connexion directe ouverte, mais SSM n\'a pas remis de clé : SSM 2.13 ou plus récent est nécessaire.';
+        }
+        if (!$this->send_heartbeat()) {
+            return $later;
+        }
+        return 'Connexion directe ouverte et prête : SSM peut ouvrir une session sur ce site.';
+    }
+
+    /** Fermeture : SSM l'apprend tout de suite et ne propose plus le lien. */
+    public function close_login_now($message) {
+        $this->send_heartbeat();
+        return $message;
+    }
+
     public function handle_login_settings() {
         if (!current_user_can('manage_options')) {
             wp_die('Accès refusé.', '', ['response' => 403]);
         }
         check_admin_referer('ssm_connector_login');
-        $message = $this->save_login_settings(!empty($_POST['ssm_login_allowed']), isset($_POST['ssm_login_user']) ? (int) $_POST['ssm_login_user'] : 0);
+        $allowed = !empty($_POST['ssm_login_allowed']);
+        $message = $this->save_login_settings($allowed, isset($_POST['ssm_login_user']) ? (int) $_POST['ssm_login_user'] : 0);
+        if (strpos($message, 'Connexion directe ') === 0) {   // enregistré (ni verrouillé, ni refusé)
+            $message = $allowed ? $this->sync_login_now() : $this->close_login_now($message);
+        }
         set_transient('ssm_connector_notice', $message, 120);
         wp_safe_redirect(admin_url('options-general.php?page=' . SSM_CONNECTOR_PAGE));
         exit;

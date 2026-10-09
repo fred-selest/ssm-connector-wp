@@ -4,7 +4,7 @@ Tags: monitoring, maintenance, inventory
 Requires at least: 5.5
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.6.0
+Stable tag: 0.6.1
 License: Private
 
 Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande. N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez.
@@ -48,6 +48,12 @@ En ligne de commande : `echo "$TOKEN" | wp ssm connect https://ssm.exemple.fr`.
 6. Configuration fixée dans wp-config.php : champs verrouillés, token hors base de données.
 
 == Changelog ==
+
+= 0.6.1 =
+* Connexion directe prête dès l'enregistrement de la case (deux envois immédiats à SSM), au lieu de jusqu'à deux heures.
+* Après une installation ou une mise à jour, SSM reçoit la nouvelle version tout de suite.
+* PHP 7.4 : plus d'avertissement « fread(): Length parameter » écrit dans le journal à chaque envoi.
+* Les extensions à jour envoient aussi leur version publiée : SSM n'affiche plus « versions inconnues » sur un site à jour.
 
 = 0.6.0 =
 * Connexion directe : case à cocher et choix de l'administrateur dans la page de l'extension ; la constante de wp-config.php reste prioritaire.
