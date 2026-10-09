@@ -15,6 +15,9 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), ver
   concluait « inconnues ». Les extensions et thèmes à jour envoient maintenant leur version publiée (`no_update` de
   WordPress) ; et quand WordPress vient d'effacer cet état (juste après une mise à jour), l'extension le fait
   recalculer avant d'envoyer. Les extensions premium hors wordpress.org restent « inconnues » : rien n'est deviné.
+- **PHP 7.4 : une fausse erreur du connecteur à chaque envoi.** Sans rien de neuf dans le journal de PHP, le
+  connecteur appelait `fread(…, 0)`, que PHP 7.4 refuse par un avertissement… écrit dans ce même journal : le
+  journal du site grossissait d'une ligne par heure et SSM affichait un avertissement venant du connecteur.
 - **Nouvelle version annoncée à SSM tout de suite** après une installation ou une mise à jour de l'extension (un envoi
   au prochain passage de WP-Cron), au lieu d'attendre l'envoi horaire.
 

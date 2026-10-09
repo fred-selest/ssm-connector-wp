@@ -1362,12 +1362,17 @@ class SSM_Connector {
         if ($offset < 0 || $offset > $size) {
             $offset = max(0, $size - self::LOG_READ_MAX);   // premier passage, ou journal vidé
         }
+        if ($size <= $offset) {
+            // Rien de neuf. PHP 7.4 refuse fread(…, 0) par un avertissement, que PHP écrit… dans ce même journal :
+            // chaque envoi ajoutait une fausse erreur du connecteur au journal du site, et SSM la remontait.
+            return;
+        }
         $fh = @fopen($path, 'rb');
         if (!$fh) {
             return;
         }
         fseek($fh, $offset);
-        $chunk = (string) fread($fh, min(self::LOG_READ_MAX, max(0, $size - $offset)));
+        $chunk = (string) fread($fh, min(self::LOG_READ_MAX, $size - $offset));
         fclose($fh);
         $end = strrpos($chunk, "\n");
         if ($end === false) {

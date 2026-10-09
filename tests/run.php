@@ -1053,6 +1053,9 @@ test("erreurs PHP : journal lu par morceaux, chemins relatifs, regroupement", fu
     same($errors[1]['count'], 2, 'avertissement compté deux fois');
     check(strpos(json_encode($errors), ABSPATH) === false, 'aucun chemin absolu du serveur');
     same($ssm->collect_inventory()['php_errors'], [], 'rien de neuf au heartbeat suivant');
+    $before = file_get_contents($log);
+    $ssm->collect_inventory();
+    same(file_get_contents($log), $before, "rien de neuf : le connecteur n'écrit rien dans le journal (PHP 7.4 : fread de 0 octet)");
     file_put_contents($log, "[08-Oct-2026 11:00:00 UTC] PHP Parse error:  syntax error in " . ABSPATH . "a.php on line 3\n", FILE_APPEND);
     $suite = $ssm->collect_inventory()['php_errors'];
     // en cas d'échec, le journal dit quelle erreur réelle de PHP s'y est glissée (php.ini de production : log_errors=On)

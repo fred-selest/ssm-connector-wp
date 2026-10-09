@@ -52,6 +52,7 @@ En ligne de commande : `echo "$TOKEN" | wp ssm connect https://ssm.exemple.fr`.
 = 0.6.1 =
 * Connexion directe prête dès l'enregistrement de la case (deux envois immédiats à SSM), au lieu de jusqu'à deux heures.
 * Après une installation ou une mise à jour, SSM reçoit la nouvelle version tout de suite.
+* PHP 7.4 : plus d'avertissement « fread(): Length parameter » écrit dans le journal à chaque envoi.
 * Les extensions à jour envoient aussi leur version publiée : SSM n'affiche plus « versions inconnues » sur un site à jour.
 
 = 0.6.0 =
