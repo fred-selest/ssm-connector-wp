@@ -101,6 +101,7 @@ function get_locale() { return 'fr_FR'; }
 function find_core_update($version, $locale) { return (object) ['current' => $version, 'locale' => $locale]; }
 function get_transient($k) { return $GLOBALS['ssm_transients_wp'][$k] ?? false; }
 function set_transient($k, $v, $ttl = 0) { $GLOBALS['ssm_transients_wp'][$k] = $v; return true; }
+function delete_transient($k) { unset($GLOBALS['ssm_transients_wp'][$k]); return true; }
 function get_user_by($field, $value) {
     foreach ($GLOBALS['ssm_users'] as $u) { if ($field === 'login' && $u->user_login === $value) { return $u; } }
     return false;

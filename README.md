@@ -86,15 +86,21 @@ arrivent dans la réponse au heartbeat ; le compte rendu part au heartbeat suiva
 
 ## Connexion directe depuis SSM (facultative)
 
-Désactivée par défaut. Pour l'activer : `define('SSM_CONNECTOR_ALLOW_LOGIN', true);` dans `wp-config.php`, et
-facultativement `define('SSM_CONNECTOR_LOGIN_USER', 'identifiant');` (sinon : le premier administrateur).
-SSM remet alors une clé propre au site ; un lien de connexion est signé avec elle, valable 60 secondes, une seule
-fois, et uniquement pour ce site. C'est la **seule porte d'entrée** de l'extension, et elle n'existe que si la
-constante est posée.
+Fermée par défaut, et SSM ne peut pas l'ouvrir à distance. Pour l'ouvrir, un administrateur coche
+« Autoriser la connexion directe depuis SSM » dans **Réglages › SSM Connector** et choisit l'administrateur
+connecté (par défaut : le premier administrateur). Décocher la referme et efface la clé aussitôt.
+
+Les constantes de `wp-config.php` **l'emportent sur la page** : `define('SSM_CONNECTOR_ALLOW_LOGIN', false);`
+la verrouille fermée (case grisée), `true` l'ouvre ; `define('SSM_CONNECTOR_LOGIN_USER', 'identifiant');`
+impose le compte. C'est utile à un hébergeur ou à un client qui veut l'interdire.
+
+Une fois la connexion ouverte, SSM remet une clé propre au site. Chaque lien de connexion est signé avec cette clé,
+valable 60 secondes, une seule fois, et uniquement pour ce site. C'est la **seule porte d'entrée** de l'extension,
+et elle n'existe que si un administrateur l'a ouverte.
 
 ## Sécurité
 
-- **Aucune porte d'entrée** par défaut : l'extension n'enregistre aucune route (ni REST, ni AJAX public) et n'écoute rien. La seule exception est la connexion directe, posée uniquement si `SSM_CONNECTOR_ALLOW_LOGIN` est défini.
+- **Aucune porte d'entrée** par défaut : l'extension n'enregistre aucune route (ni REST, ni AJAX public) et n'écoute rien. La seule exception est la connexion directe, posée uniquement si un administrateur l'a ouverte (case de la page, ou `SSM_CONNECTOR_ALLOW_LOGIN`).
 - **Token chiffré dans la base** (libsodium, clé dérivée des clés de sécurité de `wp-config.php`) : une sauvegarde de base ou une injection SQL en lecture ne révèle pas le token. Si ces clés changent, la page le signale et il suffit de recoller le token. Pour ne jamais l'écrire dans la base : constantes dans `wp-config.php`.
 - **https obligatoire** hors réseau privé : une adresse `http://` vers Internet est refusée. Le certificat est toujours vérifié (il n'existe aucune option pour l'ignorer) et les redirections ne sont jamais suivies, pour que le token n'aille pas ailleurs.
 - Le token n'est **jamais affiché en entier** (4 derniers caractères), jamais prérempli, jamais cité dans un message d'erreur.

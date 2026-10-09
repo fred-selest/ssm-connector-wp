@@ -23,6 +23,8 @@ foreach ([
     'ssm_login_key',
     'ssm_site_id',
     'ssm_login_log',
+    'ssm_login_allowed',
+    'ssm_login_user',
 ] as $option) {
     delete_option($option);
 }

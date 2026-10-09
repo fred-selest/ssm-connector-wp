@@ -4,7 +4,7 @@ Tags: monitoring, maintenance, inventory
 Requires at least: 5.5
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.5.0
+Stable tag: 0.6.0
 License: Private
 
 Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande. N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez.
@@ -23,7 +23,7 @@ Rien d'autre : ni utilisateurs, ni contenu, ni e-mails.
 
 À la demande de SSM (et seulement à sa demande) : mises à jour des extensions, des thèmes et du cœur (sauvegarde avant, contrôle de la page d'accueil après, retour à la version précédente si le site casse), activation, désactivation, installation depuis wordpress.org, suppression d'une extension inactive, sauvegarde complète du site vers le stockage S3 de l'agence.
 
-Connexion directe depuis SSM : désactivée par défaut. `define('SSM_CONNECTOR_ALLOW_LOGIN', true);` dans wp-config.php l'active (lien signé, 60 secondes, usage unique).
+Connexion directe depuis SSM : fermée par défaut. Un administrateur l'ouvre dans Réglages › SSM Connector (lien signé, 60 secondes, usage unique). `define('SSM_CONNECTOR_ALLOW_LOGIN', false);` dans wp-config.php la verrouille fermée.
 
 Sécurité : token chiffré dans la base (ou défini dans wp-config.php, hors base), https obligatoire hors réseau privé, certificat vérifié.
 
@@ -48,6 +48,9 @@ En ligne de commande : `echo "$TOKEN" | wp ssm connect https://ssm.exemple.fr`.
 6. Configuration fixée dans wp-config.php : champs verrouillés, token hors base de données.
 
 == Changelog ==
+
+= 0.6.0 =
+* Connexion directe : case à cocher et choix de l'administrateur dans la page de l'extension ; la constante de wp-config.php reste prioritaire.
 
 = 0.5.0 =
 * Mises à jour des thèmes et du cœur ; contrôle du site après chaque mise à jour, retour arrière automatique s'il casse.

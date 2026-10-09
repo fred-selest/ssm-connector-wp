@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.5.0
+ * Version: 0.6.0
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.5.0');
+define('SSM_CONNECTOR_VERSION', '0.6.0');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -48,6 +48,8 @@ class SSM_Connector {
     const OPT_LOGIN_KEY = 'ssm_login_key';            // clé de connexion directe (chiffrée)
     const OPT_SITE_ID = 'ssm_site_id';                // identifiant du site chez SSM
     const OPT_LOGIN_LOG = 'ssm_login_log';            // dernières connexions directes
+    const OPT_LOGIN_ALLOWED = 'ssm_login_allowed';    // case « Autoriser la connexion directe » (page de l'extension)
+    const OPT_LOGIN_USER = 'ssm_login_user';          // administrateur connecté (ID), 0 : le premier administrateur
     const PHP_ERRORS_MAX = 100;
     const LOG_READ_MAX = 524288;                      // 512 Ko de journal lus au plus par heartbeat
     const BACKUP_TMP = 'ssm-backup-tmp';
@@ -82,6 +84,7 @@ class SSM_Connector {
         add_action('admin_notices', [$this, 'maybe_notice']);
         add_action('admin_post_ssm_connector_connect', [$this, 'handle_connect_request']);
         add_action('admin_post_ssm_connector_test', [$this, 'handle_test_request']);
+        add_action('admin_post_ssm_connector_login', [$this, 'handle_login_settings']);
         add_action('wp_loaded', [$this, 'on_loaded']);
         add_action(self::HEARTBEAT_HOOK, [$this, 'send_heartbeat']);
         add_filter('plugin_action_links_' . plugin_basename(SSM_CONNECTOR_FILE), [$this, 'action_links']);
@@ -89,19 +92,30 @@ class SSM_Connector {
         register_deactivation_hook(SSM_CONNECTOR_FILE, [$this, 'deactivate']);
         // Erreurs fatales : relevées à la fin de chaque requête (rien n'est écrit sans erreur).
         register_shutdown_function([$this, 'capture_fatal']);
-        // La seule porte d'entrée, et seulement si l'administrateur du site l'a ouverte dans
-        // wp-config.php : sans la constante, aucun crochet public n'est posé.
+        // La seule porte d'entrée, et seulement si un administrateur du site l'a ouverte (case de la
+        // page de l'extension, ou constante de wp-config.php) : sinon, aucun crochet public n'est posé.
         if (self::login_allowed()) {
             add_action('login_init', [$this, 'handle_login']);
         }
     }
 
-    /** Connexion directe depuis SSM : activée par define('SSM_CONNECTOR_ALLOW_LOGIN', true); dans wp-config.php. */
+    /**
+     * Connexion directe depuis SSM : fermée par défaut. Un administrateur l'ouvre dans la page de
+     * l'extension, jamais SSM à distance. La constante SSM_CONNECTOR_ALLOW_LOGIN de wp-config.php
+     * l'emporte : true l'ouvre, false la verrouille fermée, quoi qu'indique la case.
+     */
     public static function login_allowed() {
         if (self::$login_allowed !== null) {
             return (bool) self::$login_allowed;
         }
-        return defined('SSM_CONNECTOR_ALLOW_LOGIN') && SSM_CONNECTOR_ALLOW_LOGIN;
+        if (self::login_locked_by_constant()) {
+            return (bool) SSM_CONNECTOR_ALLOW_LOGIN;
+        }
+        return (bool) get_option(self::OPT_LOGIN_ALLOWED, false);
+    }
+
+    public static function login_locked_by_constant() {
+        return defined('SSM_CONNECTOR_ALLOW_LOGIN');
     }
 
     /** Ce que ce connecteur sait exécuter : SSM n'envoie rien d'autre. */
@@ -1417,14 +1431,27 @@ class SSM_Connector {
         return $user;
     }
 
-    /** L'administrateur désigné (SSM_CONNECTOR_LOGIN_USER), sinon le premier administrateur. Jamais un compte choisi par SSM. */
-    private function login_user() {
+    /**
+     * L'administrateur désigné (SSM_CONNECTOR_LOGIN_USER, sinon celui choisi dans la page de l'extension),
+     * sinon le premier administrateur. Jamais un compte choisi par SSM.
+     */
+    public function login_user() {
         if (defined('SSM_CONNECTOR_LOGIN_USER') && SSM_CONNECTOR_LOGIN_USER) {
             $u = get_user_by('login', (string) SSM_CONNECTOR_LOGIN_USER);
             if (!$u) {
                 $u = get_user_by('email', (string) SSM_CONNECTOR_LOGIN_USER);
             }
             return $u ?: null;
+        }
+        $chosen = (int) get_option(self::OPT_LOGIN_USER, 0);
+        if ($chosen > 0) {
+            // Toujours administrateur au moment de la connexion : un compte rétrogradé n'est plus connecté.
+            foreach ($this->login_candidates() as $u) {
+                if ((int) $u->ID === $chosen) {
+                    return $u;
+                }
+            }
+            return null;
         }
         $admins = get_users(['role' => 'administrator', 'orderby' => 'ID', 'order' => 'ASC', 'number' => 1]);
         return $admins ? $admins[0] : null;
@@ -1672,7 +1699,9 @@ class SSM_Connector {
                     if (isset($body['site_id'])) {
                         update_option(self::OPT_SITE_ID, (int) $body['site_id'], false);
                     }
-                    if (self::login_allowed() && !empty($body['login_key']) && is_string($body['login_key'])) {
+                    if (!self::login_allowed()) {
+                        delete_option(self::OPT_LOGIN_KEY);   // porte refermée : la clé ne doit plus servir
+                    } elseif (!empty($body['login_key']) && is_string($body['login_key'])) {
                         update_option(self::OPT_LOGIN_KEY, self::protect($body['login_key']), false);
                     }
                     $this->apply_commands(is_array($body['commands'] ?? null) ? $body['commands'] : []);
@@ -1775,6 +1804,11 @@ class SSM_Connector {
         }
         echo 'SSM Connector</h1>';
         echo '<p>Version ' . esc_html(SSM_CONNECTOR_VERSION) . '</p>';
+        $notice = get_transient('ssm_connector_notice');
+        if (is_string($notice) && $notice !== '') {
+            delete_transient('ssm_connector_notice');
+            echo '<div class="notice notice-info inline"><p>' . esc_html($notice) . '</p></div>';
+        }
 
         // --- État ---
         if ($cfg['problem'] !== '') {
@@ -1844,16 +1878,78 @@ class SSM_Connector {
         }
         echo '<li>Envoyé à SSM : versions de WordPress, de PHP et de la base, serveur web, nom de la machine, chemin d\'installation, extensions et thèmes (versions, état, mises à jour), erreurs PHP (chemins relatifs au site). Rien d\'autre : ni utilisateurs, ni contenu, ni e-mails.</li>';
         echo '<li>Exécuté à la demande de SSM : mises à jour (sauvegarde avant, contrôle du site après, retour à la version précédente si le site casse), activation, désactivation, installation depuis wordpress.org, sauvegarde du site vers le stockage de l\'agence.</li>';
-        if (self::login_allowed()) {
-            echo '<li><strong>Connexion directe activée</strong> (<code>SSM_CONNECTOR_ALLOW_LOGIN</code>) : un lien signé par SSM, valable 60 secondes et une seule fois, ouvre une session d\'administrateur. '
-                . ($this->login_key() ? 'Clé reçue.' : 'Clé pas encore reçue (au prochain envoi).') . ' Retirez la constante pour fermer cette porte.</li>';
-        } else {
-            echo '<li>Connexion directe depuis SSM : désactivée. Pour l\'activer, ajoutez <code>define(\'SSM_CONNECTOR_ALLOW_LOGIN\', true);</code> dans wp-config.php.</li>';
-        }
+        echo '<li>Connexion directe depuis SSM : ' . (self::login_allowed() ? '<strong>ouverte</strong> (voir ci-dessous).' : 'fermée.') . '</li>';
         echo '</ul>';
+
+        $this->render_login_section();
 
         $this->render_update_section();
         echo '</div>';
+    }
+
+    /** Administrateurs proposés à la connexion directe. */
+    public function login_candidates() {
+        return get_users(['role' => 'administrator', 'orderby' => 'ID', 'order' => 'ASC', 'number' => 200]);
+    }
+
+    private function render_login_section() {
+        $locked = self::login_locked_by_constant();
+        $allowed = self::login_allowed();
+        echo '<h2>Connexion directe depuis SSM</h2>';
+        echo '<p>Un clic dans SSM ouvre l\'administration de ce site, sans mot de passe : lien signé, valable 60 secondes, une seule fois. '
+            . 'Fermée par défaut ; SSM ne peut pas l\'ouvrir à distance.</p>';
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+        echo '<input type="hidden" name="action" value="ssm_connector_login" />';
+        wp_nonce_field('ssm_connector_login');
+        $disabled = $locked ? ' disabled' : '';
+        echo '<p><label><input type="checkbox" name="ssm_login_allowed" value="1"' . ($allowed ? ' checked' : '') . $disabled . ' /> '
+            . 'Autoriser la connexion directe depuis SSM</label></p>';
+        $chosen = (int) get_option(self::OPT_LOGIN_USER, 0);
+        echo '<p><label for="ssm_login_user">Administrateur connecté</label><br /><select id="ssm_login_user" name="ssm_login_user"' . $disabled . '>'
+            . '<option value="0">Le premier administrateur</option>';
+        foreach ($this->login_candidates() as $u) {
+            echo '<option value="' . (int) $u->ID . '"' . ((int) $u->ID === $chosen ? ' selected' : '') . '>'
+                . esc_html(($u->display_name ?? $u->user_login) . ' (' . $u->user_login . ')') . '</option>';
+        }
+        echo '</select></p>';
+        if ($locked) {
+            echo '<p class="description">' . ($allowed ? 'Ouverte' : 'Fermée') . ' et verrouillée par <code>SSM_CONNECTOR_ALLOW_LOGIN</code> dans wp-config.php.</p>';
+        } else {
+            submit_button('Enregistrer', 'secondary', 'submit', false);
+        }
+        if ($allowed) {
+            echo '<p class="description">' . ($this->login_key() ? 'Clé reçue de SSM : prête.' : 'Clé pas encore reçue (au prochain envoi).') . '</p>';
+        }
+        echo '</form>';
+    }
+
+    /** Enregistre la case et l'administrateur choisi. Renvoie le message à afficher. */
+    public function save_login_settings($allowed, $user_id) {
+        if (self::login_locked_by_constant()) {
+            return 'Réglage imposé par SSM_CONNECTOR_ALLOW_LOGIN dans wp-config.php.';
+        }
+        $user_id = (int) $user_id;
+        if ($user_id > 0 && !in_array($user_id, array_map(function ($u) { return (int) $u->ID; }, $this->login_candidates()), true)) {
+            return 'Administrateur inconnu.';
+        }
+        update_option(self::OPT_LOGIN_ALLOWED, $allowed ? 1 : 0, false);
+        update_option(self::OPT_LOGIN_USER, $user_id, false);
+        if (!$allowed) {
+            delete_option(self::OPT_LOGIN_KEY);   // refermée : les liens déjà signés cessent de servir
+            return 'Connexion directe fermée.';
+        }
+        return 'Connexion directe ouverte : prête après deux envois à SSM (clé remise, puis confirmée).';
+    }
+
+    public function handle_login_settings() {
+        if (!current_user_can('manage_options')) {
+            wp_die('Accès refusé.', '', ['response' => 403]);
+        }
+        check_admin_referer('ssm_connector_login');
+        $message = $this->save_login_settings(!empty($_POST['ssm_login_allowed']), isset($_POST['ssm_login_user']) ? (int) $_POST['ssm_login_user'] : 0);
+        set_transient('ssm_connector_notice', $message, 120);
+        wp_safe_redirect(admin_url('options-general.php?page=' . SSM_CONNECTOR_PAGE));
+        exit;
     }
 
     private function render_update_section() {
