@@ -429,12 +429,34 @@ class SSM_Connector {
         return $value === '' ? null : $value;
     }
 
+    /**
+     * L'état des mises à jour tel que WordPress le calcule. Juste après une mise à jour, WordPress l'efface et ne le
+     * recalcule qu'au prochain passage dans l'administration : sans lui, l'inventaire ne dirait rien des versions
+     * publiées. On le fait recalculer (la même requête vers wordpress.org que WordPress fait deux fois par jour).
+     */
+    private function update_state($transient, $refresh) {
+        $state = get_site_transient($transient);
+        if (!is_object($state) || empty($state->last_checked)) {
+            if (!function_exists($refresh) && is_readable(ABSPATH . 'wp-includes/update.php')) {
+                require_once ABSPATH . 'wp-includes/update.php';   // chargé par WordPress en temps normal
+            }
+            if (function_exists($refresh)) {
+                $refresh();
+                $state = get_site_transient($transient);
+            }
+        }
+        return $state;
+    }
+
     private function collect_plugins() {
         if (!function_exists('get_plugins')) {
             require_once ABSPATH . 'wp-admin/includes/plugin.php';
         }
-        $updates = get_site_transient('update_plugins');
+        $updates = $this->update_state('update_plugins', 'wp_update_plugins');
         $response = (is_object($updates) && isset($updates->response) && is_array($updates->response)) ? $updates->response : [];
+        // WordPress range les extensions à jour dans no_update, avec leur version publiée : sans elles, une extension
+        // à jour n'avait pas de « dernière version », et SSM affichait « versions inconnues » sur un site tout à jour.
+        $current = (is_object($updates) && isset($updates->no_update) && is_array($updates->no_update)) ? $updates->no_update : [];
         $list = [];
         $seen = [];
         foreach (get_plugins() as $path => $data) {
@@ -448,8 +470,8 @@ class SSM_Connector {
             }
             $seen[$slug] = true;
             $latest = null;
-            if (isset($response[$path])) {
-                $info = $response[$path];
+            $info = $response[$path] ?? ($current[$path] ?? null);
+            if ($info !== null) {
                 $latest = is_object($info) ? ($info->new_version ?? null) : (is_array($info) ? ($info['new_version'] ?? null) : null);
             }
             $name = wp_strip_all_tags((string) ($data['Name'] ?? ''));
@@ -469,14 +491,15 @@ class SSM_Connector {
         if (!function_exists('wp_get_themes')) {
             require_once ABSPATH . 'wp-includes/theme.php';
         }
-        $updates = get_site_transient('update_themes');
+        $updates = $this->update_state('update_themes', 'wp_update_themes');
         $response = (is_object($updates) && isset($updates->response) && is_array($updates->response)) ? $updates->response : [];
+        $current = (is_object($updates) && isset($updates->no_update) && is_array($updates->no_update)) ? $updates->no_update : [];
         $active = get_stylesheet();
         $list = [];
         foreach (wp_get_themes() as $slug => $theme) {
             $latest = null;
-            if (isset($response[$slug])) {
-                $info = $response[$slug];
+            $info = $response[$slug] ?? ($current[$slug] ?? null);
+            if ($info !== null) {
                 $latest = is_object($info) ? ($info->new_version ?? null) : (is_array($info) ? ($info['new_version'] ?? null) : null);
             }
             // pour un thème autonome, le « template » est le thème lui-même : seul un thème enfant a un parent

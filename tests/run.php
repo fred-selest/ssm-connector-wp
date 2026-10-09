@@ -149,6 +149,26 @@ test("l'inventaire respecte le contrat de SSM Core", function () use ($ssm) {
     check_core_limits($inv);
 });
 
+test("versions publiées : celles des extensions à jour aussi, et l'état recalculé s'il a été effacé", function () use ($ssm) {
+    ssm_reset();
+    $GLOBALS['ssm_plugins'] = ['a/a.php' => ['Name' => 'A', 'Version' => '1.0'], 'b/b.php' => ['Name' => 'B', 'Version' => '2.0'],
+                               'c/c.php' => ['Name' => 'C', 'Version' => '3.0']];
+    $state = (object) ['last_checked' => time(), 'response' => ['a/a.php' => (object) ['new_version' => '1.1']],
+                       'no_update' => ['b/b.php' => (object) ['new_version' => '2.0']]];
+    $GLOBALS['ssm_transients']['update_plugins'] = $state;
+    $by = array_column($ssm->collect_inventory()['extensions'], null, 'slug');
+    same([$by['a']['latest_version'], $by['a']['update_available']], ['1.1', true], 'mise à jour en attente');
+    same([$by['b']['latest_version'], $by['b']['update_available']], ['2.0', false], "à jour : sa version publiée, plus « inconnue »");
+    same($by['c']['latest_version'], null, 'hors wordpress.org (premium) : inconnue, rien de deviné');
+    same(in_array('plugins', $GLOBALS['ssm_refreshed'], true), false, 'état présent : pas de requête vers wordpress.org');
+
+    unset($GLOBALS['ssm_transients']['update_plugins']);   // effacé par WordPress juste après une mise à jour
+    $GLOBALS['ssm_refresh_plugins'] = $state;
+    $by = array_column($ssm->collect_inventory()['extensions'], null, 'slug');
+    same(in_array('plugins', $GLOBALS['ssm_refreshed'], true), true, 'état recalculé');
+    same($by['b']['latest_version'], '2.0', 'et les versions publiées sont là dès cet envoi');
+});
+
 test("données minimales : rien que SSM Core lit, aucune donnée personnelle", function () use ($ssm) {
     $keys = array_keys($ssm->collect_inventory());
     sort($keys);

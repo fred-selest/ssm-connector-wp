@@ -141,6 +141,11 @@ function get_home_url() { return 'https://exemple.test'; }
 function current_time($type) { return $type === 'mysql' ? '2026-10-04 21:00:00' : '2026-10-04T21:00:00+00:00'; }
 function wp_next_scheduled($hook) { return $GLOBALS['ssm_scheduled'][$hook] ?? false; }
 function wp_schedule_event($ts, $recurrence, $hook) { $GLOBALS['ssm_scheduled'][$hook] = $ts; }
+function wp_update_plugins() {
+    $GLOBALS['ssm_refreshed'][] = 'plugins';
+    if (isset($GLOBALS['ssm_refresh_plugins'])) { $GLOBALS['ssm_transients']['update_plugins'] = $GLOBALS['ssm_refresh_plugins']; }
+}
+function wp_update_themes() { $GLOBALS['ssm_refreshed'][] = 'themes'; }
 function wp_schedule_single_event($ts, $hook, $args = []) { $GLOBALS['ssm_single_events'][] = [$hook, $args]; return true; }
 function wp_clear_scheduled_hook($hook) { unset($GLOBALS['ssm_scheduled'][$hook]); }
 function wp_strip_all_tags($s) { return trim(strip_tags((string) $s)); }
@@ -272,6 +277,8 @@ function ssm_reset() {
     $GLOBALS['ssm_settings_errors'] = [];
     $GLOBALS['ssm_scheduled'] = [];
     $GLOBALS['ssm_single_events'] = [];
+    $GLOBALS['ssm_refreshed'] = [];
+    unset($GLOBALS['ssm_refresh_plugins']);
     $GLOBALS['ssm_get'] = null;
     $GLOBALS['ssm_get_calls'] = [];
     $GLOBALS['ssm_transient_ttl'] = [];

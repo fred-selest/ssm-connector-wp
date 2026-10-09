@@ -10,6 +10,11 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), ver
 - **Connexion directe : prête dès l'enregistrement de la case.** Elle demandait deux envois à SSM (la clé remise,
   puis confirmée), soit jusqu'à deux heures avec l'envoi horaire. Enregistrer la case fait maintenant ces deux envois
   tout de suite, et le message dit si elle est prête. La refermer prévient SSM aussitôt.
+- **« Versions disponibles inconnues » sur un site tout à jour.** WordPress ne donne la version publiée que des
+  extensions qui ont une mise à jour : une fois tout mis à jour, l'inventaire n'en contenait plus aucune et SSM
+  concluait « inconnues ». Les extensions et thèmes à jour envoient maintenant leur version publiée (`no_update` de
+  WordPress) ; et quand WordPress vient d'effacer cet état (juste après une mise à jour), l'extension le fait
+  recalculer avant d'envoyer. Les extensions premium hors wordpress.org restent « inconnues » : rien n'est deviné.
 - **Nouvelle version annoncée à SSM tout de suite** après une installation ou une mise à jour de l'extension (un envoi
   au prochain passage de WP-Cron), au lieu d'attendre l'envoi horaire.
 
