@@ -39,12 +39,16 @@ jobs:
             exit 1
           fi
 
+      - uses: shivammathur/setup-php@v2   # sans Docker Hub (limite de téléchargement anonyme)
+        with:
+          php-version: '7.4'
+          extensions: zip
+          coverage: none
+
       - name: Tests (PHP 7.4, la version minimale annoncée)
         run: |
-          docker run --rm -v "$PWD":/app -w /app php:7.4-cli sh -c '
-            set -e
-            for f in ssm-connector.php uninstall.php tests/*.php; do php -l "$f"; done
-            php tests/run.php'
+          for f in ssm-connector.php uninstall.php tests/*.php; do php -l "$f"; done
+          php tests/run.php
 
       - name: Construire les ZIP
         run: sh scripts/build-zip.sh dist
