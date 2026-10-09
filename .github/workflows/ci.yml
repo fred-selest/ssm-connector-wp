@@ -22,6 +22,10 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/app -w /app php:${{ matrix.php }}-cli sh -c '
             set -e
+            # extension zip requise pour tester la sauvegarde du site (sinon seul le cas sans zip est vu)
+            apt-get update -qq >/dev/null && apt-get install -y -qq libzip-dev >/dev/null
+            docker-php-ext-install -j"$(nproc)" zip >/dev/null
+            php -r "exit(class_exists(\"ZipArchive\") ? 0 : 1);"
             for f in ssm-connector.php uninstall.php tests/*.php; do php -l "$f"; done
             php tests/run.php'
 

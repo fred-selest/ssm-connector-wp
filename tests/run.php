@@ -1089,6 +1089,11 @@ test("sauvegarde : base et fichiers dans l'archive, médias exclus sur demande, 
     $ssm->apply_commands([['id' => 9, 'ref' => 'command', 'kind' => 'backup_site',
         'params' => ['upload_url' => 'https://s3.example/b/k.zip?X-Amz-Signature=x', 'include_uploads' => false, 'max_bytes' => 100000000]]]);
     $r = action_result();
+    if (!class_exists('ZipArchive')) {       // PHP sans l'extension zip : échec dit, rien de tenté
+        same($r['status'], 'failed', 'sans zip : sauvegarde refusée');
+        check(strpos($r['error'] ?? '', 'zip') !== false, 'sans zip : raison donnée');
+        return;
+    }
     same($r['status'], 'success', 'sauvegarde rapportée réussie');
     check($r['data']['size_bytes'] > 0 && strlen($r['data']['sha256']) === 64, 'taille et empreinte');
     same($r['data']['tables'], 2, 'deux tables exportées');
@@ -1101,6 +1106,9 @@ test("sauvegarde : base et fichiers dans l'archive, médias exclus sur demande, 
 });
 
 test("sauvegarde : un dépôt refusé est un échec, et le dossier de travail est quand même nettoyé", function () use ($ssm) {
+    if (!class_exists('ZipArchive')) {
+        return;                          // sans zip, rien n'est déposé : cas couvert par le test précédent
+    }
     SSM_Connector::$uploader = function () { return ['ok' => false, 'error' => 'HTTP 403 SignatureDoesNotMatch']; };
     $ssm->apply_commands([['id' => 10, 'ref' => 'command', 'kind' => 'backup_site', 'params' => ['upload_url' => 'https://s3.example/k.zip']]]);
     same(action_result()['status'], 'failed', 'échec');
