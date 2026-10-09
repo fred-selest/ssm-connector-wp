@@ -4,6 +4,23 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), ver
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-09
+
+### Ajouté
+- **Connexion directe : case à cocher** dans Réglages › SSM Connector, avec le choix de l'administrateur
+  connecté (formulaire protégé par un nonce, réservé à `manage_options`). Plus besoin d'éditer
+  `wp-config.php`. SSM ne peut toujours pas l'ouvrir à distance.
+- Les constantes `SSM_CONNECTOR_ALLOW_LOGIN` et `SSM_CONNECTOR_LOGIN_USER` restent prioritaires : `false`
+  verrouille la connexion fermée (case grisée).
+
+### Changé
+- Fermer la connexion (case décochée ou constante à `false`) efface aussitôt la clé. Une clé renvoyée ensuite
+  par SSM est refusée.
+- Un administrateur choisi puis rétrogradé n'est plus connecté : personne ne l'est à sa place.
+
+Vérifié sur un WordPress réel : formulaire enregistré, lien produit par SSM Core ouvrant la session de
+l'administrateur choisi, lien rejoué refusé, porte refermée en décochant.
+
 ## [0.5.0] - 2026-10-09
 
 ### Ajouté

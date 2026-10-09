@@ -1172,5 +1172,42 @@ test("contrôle de santé : avant la mise à jour tout de suite, après en laiss
     same($appels, [false, true], 'avant : immédiat ; après : différé');
 });
 
+test("connexion directe : case de la page de l'extension et administrateur choisi", function () use ($ssm) {
+    ssm_reset();
+    $GLOBALS['ssm_users'] = [(object) ['ID' => 1, 'user_login' => 'admin', 'display_name' => 'Admin'],
+                             (object) ['ID' => 4, 'user_login' => 'fred', 'display_name' => 'Fred']];
+    same(SSM_Connector::login_allowed(), false, 'fermée par défaut');
+    check(strpos(page_html($ssm), 'name="ssm_login_allowed" value="1" />') !== false, 'case décochée dans la page');
+    same($ssm->save_login_settings(true, 4), 'Connexion directe ouverte : prête après deux envois à SSM (clé remise, puis confirmée).', 'ouverte');
+    same(SSM_Connector::login_allowed(), true, 'ouverte par la case');
+    $html = page_html($ssm);
+    check(strpos($html, 'name="ssm_login_allowed" value="1" checked') !== false && strpos($html, '<option value="4" selected>Fred (fred)</option>') !== false, 'page remplie');
+    check(strpos($html, 'nonce-ssm_connector_login') !== false, 'formulaire protégé par un nonce');
+    same($ssm->login_user()->ID, 4, "c'est cet administrateur qui sera connecté");
+    same($ssm->save_login_settings(true, 99), 'Administrateur inconnu.', 'administrateur inconnu refusé');
+    $GLOBALS['ssm_users'] = [(object) ['ID' => 1, 'user_login' => 'admin']];
+    same($ssm->login_user(), null, "plus administrateur : personne n'est connecté, pas un autre");
+
+    update_option(SSM_Connector::OPT_LOGIN_KEY, 'x');
+    same($ssm->save_login_settings(false, 0), 'Connexion directe fermée.', 'refermée');
+    same([SSM_Connector::login_allowed(), get_option(SSM_Connector::OPT_LOGIN_KEY)], [false, false], 'clé effacée aussitôt');
+    update_option(SSM_Connector::OPT_LOGIN_KEY, 'y');
+    configure();
+    core_replies(200, ['site_id' => 7, 'status' => 'accepted', 'commands' => [], 'login_key' => 'z']);
+    $ssm->send_heartbeat();
+    same(get_option(SSM_Connector::OPT_LOGIN_KEY), false, 'fermée : la clé envoyée par SSM est refusée et effacée');
+});
+
+// En dernier : une constante PHP ne se retire plus une fois définie.
+test("connexion directe : la constante de wp-config.php l'emporte sur la case", function () use ($ssm) {
+    ssm_reset();
+    update_option(SSM_Connector::OPT_LOGIN_ALLOWED, 1);
+    define('SSM_CONNECTOR_ALLOW_LOGIN', false);
+    same(SSM_Connector::login_allowed(), false, 'constante à false : fermée malgré la case');
+    same($ssm->save_login_settings(true, 0), 'Réglage imposé par SSM_CONNECTOR_ALLOW_LOGIN dans wp-config.php.', 'réglage refusé');
+    $html = page_html($ssm);
+    check(strpos($html, 'name="ssm_login_allowed" value="1" disabled') !== false && strpos($html, 'Fermée et verrouillée') !== false, 'case grisée, verrou affiché');
+});
+
 echo "\n$checks vérifications, $failures échec(s)\n";
 exit($failures === 0 ? 0 : 1);
