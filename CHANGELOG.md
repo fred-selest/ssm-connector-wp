@@ -4,6 +4,15 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), ver
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-09
+
+### Corrigé
+- **Connexion directe : prête dès l'enregistrement de la case.** Elle demandait deux envois à SSM (la clé remise,
+  puis confirmée), soit jusqu'à deux heures avec l'envoi horaire. Enregistrer la case fait maintenant ces deux envois
+  tout de suite, et le message dit si elle est prête. La refermer prévient SSM aussitôt.
+- **Nouvelle version annoncée à SSM tout de suite** après une installation ou une mise à jour de l'extension (un envoi
+  au prochain passage de WP-Cron), au lieu d'attendre l'envoi horaire.
+
 ## [0.6.0] - 2026-10-09
 
 ### Ajouté

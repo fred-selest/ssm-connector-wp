@@ -1198,6 +1198,39 @@ test("connexion directe : case de la page de l'extension et administrateur chois
     same(get_option(SSM_Connector::OPT_LOGIN_KEY), false, 'fermée : la clé envoyée par SSM est refusée et effacée');
 });
 
+test("connexion directe : prête dès l'enregistrement de la case, sans attendre deux envois horaires", function () use ($ssm) {
+    ssm_reset();
+    configure();
+    $GLOBALS['ssm_users'] = [(object) ['ID' => 1, 'user_login' => 'admin', 'display_name' => 'Admin']];
+    $envois = [];
+    $GLOBALS['ssm_http'] = function ($url, $args) use (&$envois) {
+        $body = json_decode($args['body'], true);
+        $envois[] = $body['login_key_fingerprint'] ?? null;
+        // SSM : remet la clé tant que l'empreinte ne correspond pas, puis plus rien
+        $fp = substr(hash('sha256', 'cle-de-ssm'), 0, 16);
+        $reply = ['site_id' => 7, 'status' => 'accepted', 'commands' => []];
+        if (($body['login_key_fingerprint'] ?? null) !== $fp) {
+            $reply['login_key'] = 'cle-de-ssm';
+        }
+        return ['code' => 200, 'body' => json_encode($reply)];
+    };
+    $ssm->save_login_settings(true, 1);
+    same($ssm->sync_login_now(), 'Connexion directe ouverte et prête : SSM peut ouvrir une session sur ce site.', 'prête');
+    same(count($envois), 2, 'deux envois tout de suite');
+    same([$envois[0], $envois[1]], [null, substr(hash('sha256', 'cle-de-ssm'), 0, 16)], 'le second annonce la clé reçue au premier');
+
+    core_replies(500, []);
+    same(strpos($ssm->sync_login_now(), 'SSM n\'a pas répondu') !== false, true, 'SSM muet : le message le dit');
+});
+
+test("une nouvelle version de l'extension est annoncée à SSM sans attendre l'envoi horaire", function () use ($ssm) {
+    ssm_reset();
+    $ssm->announce_new_version();
+    same($GLOBALS['ssm_single_events'], [[SSM_Connector::HEARTBEAT_HOOK, ['nouvelle-version']]], 'un envoi immédiat');
+    $ssm->announce_new_version();
+    same(count($GLOBALS['ssm_single_events']), 1, 'une seule fois par version');
+});
+
 // En dernier : une constante PHP ne se retire plus une fois définie.
 test("connexion directe : la constante de wp-config.php l'emporte sur la case", function () use ($ssm) {
     ssm_reset();

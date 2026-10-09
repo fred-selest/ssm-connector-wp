@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.6.0
+ * Version: 0.6.1
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.6.0');
+define('SSM_CONNECTOR_VERSION', '0.6.1');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -46,6 +46,7 @@ class SSM_Connector {
     const OPT_PHP_ERRORS = 'ssm_php_errors';          // erreurs PHP en attente d'envoi
     const OPT_LOG_OFFSET = 'ssm_debug_log_offset';    // position de lecture du journal de PHP
     const OPT_LOGIN_KEY = 'ssm_login_key';            // clé de connexion directe (chiffrée)
+    const OPT_VERSION_SENT = 'ssm_connector_version_sent';   // dernière version annoncée à SSM
     const OPT_SITE_ID = 'ssm_site_id';                // identifiant du site chez SSM
     const OPT_LOGIN_LOG = 'ssm_login_log';            // dernières connexions directes
     const OPT_LOGIN_ALLOWED = 'ssm_login_allowed';    // case « Autoriser la connexion directe » (page de l'extension)
@@ -145,6 +146,19 @@ class SSM_Connector {
     public function on_loaded() {
         $this->maybe_upgrade();
         $this->schedule_heartbeat();
+        $this->announce_new_version();
+    }
+
+    /**
+     * Après une installation ou une mise à jour de l'extension, un envoi part tout de suite (au prochain passage
+     * de WP-Cron) au lieu d'attendre l'envoi horaire : SSM affiche la nouvelle version dans la minute.
+     */
+    public function announce_new_version() {
+        if (get_option(self::OPT_VERSION_SENT) === SSM_CONNECTOR_VERSION) {
+            return;
+        }
+        update_option(self::OPT_VERSION_SENT, SSM_CONNECTOR_VERSION, false);
+        wp_schedule_single_event(time(), self::HEARTBEAT_HOOK, ['nouvelle-version']);
     }
 
     public function schedule_heartbeat() {
@@ -1941,12 +1955,41 @@ class SSM_Connector {
         return 'Connexion directe ouverte : prête après deux envois à SSM (clé remise, puis confirmée).';
     }
 
+    /**
+     * Ouverture : deux envois tout de suite au lieu d'attendre deux envois horaires (jusqu'à deux heures). Le premier
+     * reçoit la clé de SSM, le second annonce son empreinte : SSM confirme, la connexion directe est prête.
+     */
+    public function sync_login_now() {
+        $later = 'Connexion directe ouverte. SSM n\'a pas répondu : elle sera prête après deux envois horaires '
+            . '(ou deux clics sur « Tester la connexion »).';
+        if (!$this->send_heartbeat()) {
+            return $later;
+        }
+        if (!$this->login_key()) {
+            return 'Connexion directe ouverte, mais SSM n\'a pas remis de clé : SSM 2.13 ou plus récent est nécessaire.';
+        }
+        if (!$this->send_heartbeat()) {
+            return $later;
+        }
+        return 'Connexion directe ouverte et prête : SSM peut ouvrir une session sur ce site.';
+    }
+
+    /** Fermeture : SSM l'apprend tout de suite et ne propose plus le lien. */
+    public function close_login_now($message) {
+        $this->send_heartbeat();
+        return $message;
+    }
+
     public function handle_login_settings() {
         if (!current_user_can('manage_options')) {
             wp_die('Accès refusé.', '', ['response' => 403]);
         }
         check_admin_referer('ssm_connector_login');
-        $message = $this->save_login_settings(!empty($_POST['ssm_login_allowed']), isset($_POST['ssm_login_user']) ? (int) $_POST['ssm_login_user'] : 0);
+        $allowed = !empty($_POST['ssm_login_allowed']);
+        $message = $this->save_login_settings($allowed, isset($_POST['ssm_login_user']) ? (int) $_POST['ssm_login_user'] : 0);
+        if (strpos($message, 'Connexion directe ') === 0) {   // enregistré (ni verrouillé, ni refusé)
+            $message = $allowed ? $this->sync_login_now() : $this->close_login_now($message);
+        }
         set_transient('ssm_connector_notice', $message, 120);
         wp_safe_redirect(admin_url('options-general.php?page=' . SSM_CONNECTOR_PAGE));
         exit;
