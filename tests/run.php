@@ -33,7 +33,7 @@ const TOKEN_B = 'Zz1_Yy2-Xx3_Ww4-Vv5_Uu6-Tt7_Ss8-Rr9_Qq0-Pp1_Oo';
 
 // Limites de SSM Core (app/schemas.py) : HeartbeatRequest, ExtensionData, ThemeData.
 const CORE_LIMITS = [
-    'top' => ['cms_version' => 50, 'php_version' => 20, 'db_version' => 50, 'web_server' => 50, 'hostname' => 255, 'site_path' => 500],
+    'top' => ['cms_version' => 50, 'php_version' => 20, 'db_version' => 50, 'web_server' => 50, 'hostname' => 255, 'site_path' => 500, 'shop_url' => 255],
     'extension' => ['slug' => 255, 'name' => 255, 'version' => 50, 'latest_version' => 50],
     'theme' => ['slug' => 255, 'name' => 255, 'version' => 50, 'latest_version' => 50, 'parent_theme' => 255],
 ];
@@ -173,12 +173,61 @@ test("données minimales : rien que SSM Core lit, aucune donnée personnelle", f
     $keys = array_keys($ssm->collect_inventory());
     sort($keys);
     $expected = ['capabilities', 'cms', 'cms_version', 'command_results', 'connector_version', 'db_version', 'extensions',
-                 'hostname', 'login_enabled', 'php_errors', 'php_version', 'results', 'site_path', 'themes', 'web_server'];
+                 'hostname', 'login_enabled', 'php_errors', 'php_version', 'results', 'shop_url', 'site_path', 'themes', 'web_server'];
     same($keys, $expected, 'clés envoyées');
+    same($ssm->collect_inventory()['shop_url'], 'https://exemple.test/', 'adresse du site (SSM propose de suivre un passage en ligne)');
     $json = json_encode($ssm->collect_inventory());
     foreach (['admin_email', 'users_count', 'pending_events', 'user_login', 'user_email', 'password', 'token'] as $forbidden) {
         check(stripos($json, $forbidden) === false, "pas de « $forbidden » dans l'inventaire");
     }
+});
+
+test("question « une action m'attend-elle ? » : envoi complet seulement si SSM répond oui", function () use ($ssm) {
+    same($ssm->poll(), false, 'sans configuration : aucune requête');
+    same(count($GLOBALS['ssm_get_calls']), 0, 'aucune question posée');
+    configure();
+    $posts = 0;
+    $GLOBALS['ssm_http'] = function ($url, $args) use (&$posts) { $posts++; return ['code' => 200, 'body' => '{"site_id": 4, "commands": []}']; };
+    $GLOBALS['ssm_get'] = function ($url, $args) { return ['code' => 200, 'body' => '{"pending": false}']; };
+    same($ssm->poll(), false, 'rien en attente : pas d\'envoi');
+    same($posts, 0, 'aucun inventaire envoyé');
+    $call = $GLOBALS['ssm_get_calls'][0];
+    same($call['url'], 'https://ssm.exemple.fr/api/v1/connector/pending', 'adresse de la question');
+    same($call['args']['headers']['X-SSM-Token'], TOKEN_A, 'authentifiée par le token');
+    $GLOBALS['ssm_get'] = function ($url, $args) { return ['code' => 200, 'body' => '{"pending": true}']; };
+    same($ssm->poll(), true, 'une action attend : envoi complet');
+    same($posts, 1, 'un inventaire envoyé');
+    $GLOBALS['ssm_get'] = function ($url, $args) { return ['code' => 404, 'body' => '{"detail": "Not Found"}']; };
+    same($ssm->poll(), false, 'SSM plus ancien (route absente) : rien, l\'envoi horaire reste');
+    $GLOBALS['ssm_get'] = function ($url, $args) { return new WP_Error('http_request_failed', 'timeout'); };
+    same($ssm->poll(), false, 'SSM injoignable : rien');
+    check(in_array('poll', $ssm->capabilities(), true), 'capacité « poll » annoncée');
+});
+
+test("question toutes les deux minutes, planifiée et retirée avec l'extension, sans route publique", function () use ($ssm) {
+    $schedules = $ssm->cron_schedules([]);
+    same($schedules['ssm_two_minutes']['interval'], 120, 'intervalle de deux minutes');
+    $ssm->on_loaded();
+    check(!empty($GLOBALS['ssm_scheduled']['ssm_poll_event']), 'question planifiée');
+    check(!empty($GLOBALS['ssm_hooks']['ssm_poll_event']), 'crochet branché');
+    $ssm->deactivate();
+    check(empty($GLOBALS['ssm_scheduled']['ssm_poll_event']), 'retirée à la désactivation');
+    check(strpos(file_get_contents(dirname(__DIR__) . '/uninstall.php'), "ssm_poll_event") !== false, 'retirée à la suppression');
+});
+
+test("le résultat des actions part aussitôt, en un seul renvoi", function () use ($ssm) {
+    configure();
+    $posts = 0;
+    $GLOBALS['ssm_http'] = function ($url, $args) use (&$posts) {
+        $posts++;
+        // SSM renvoie une action à chaque envoi : sans garde, le connecteur enchaînerait les envois
+        return ['code' => 200, 'body' => json_encode(['site_id' => 4, 'commands' => [
+            ['id' => $posts, 'ref' => 'command', 'kind' => 'inconnue']]])];
+    };
+    $ssm->send_heartbeat();
+    same($posts, 2, 'envoi, puis un renvoi qui rapporte le résultat');
+    $sent = json_decode($GLOBALS['ssm_http_calls'][1]['args']['body'], true);
+    check(!empty($sent['command_results']), 'le renvoi porte le compte rendu');
 });
 
 test("slugs d'extensions et de thèmes", function () use ($ssm) {

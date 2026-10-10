@@ -4,6 +4,19 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), ver
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-10
+
+### Ajouté
+- **Les demandes de SSM partent en quelques minutes au lieu d'une heure.** Une mise à jour, une action sur une
+  extension ou une sauvegarde demandée dans SSM attendait l'envoi horaire, qui dépend en plus des visites du site
+  (WP-Cron ne tourne qu'à l'affichage d'une page). Toutes les deux minutes, le connecteur demande maintenant à SSM si
+  une action l'attend (requête légère, authentifiée par le token) et n'envoie son inventaire que si c'est le cas ;
+  SSM 2.16 fait tourner WP-Cron juste après une demande en appelant `wp-cron.php`, la page de WordPress prévue pour
+  cela. L'extension n'ouvre toujours aucune porte sur le site : aucune route, aucun point d'entrée public.
+- **Le résultat d'une action part aussitôt** (un second envoi juste après l'exécution) au lieu de l'envoi suivant.
+- **L'adresse du site** (`home_url`) est transmise : après un passage d'une adresse provisoire à l'adresse
+  définitive, SSM propose de suivre.
+
 ## [0.6.1] - 2026-10-09
 
 ### Corrigé

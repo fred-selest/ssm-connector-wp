@@ -3,7 +3,8 @@
 # SSM Connector — WordPress
 
 Extension WordPress qui envoie à **SSM Core** (Selest Site Manager) l'inventaire du site : version de WordPress, de PHP et de la base,
-extensions et thèmes (avec les mises à jour disponibles). L'envoi est automatique, toutes les heures.
+extensions et thèmes (avec les mises à jour disponibles). L'envoi est automatique, toutes les heures ; une action
+demandée dans SSM part en quelques minutes (voir « Ce que SSM peut demander »).
 
 - **Facile** : une adresse, un token, un bouton **Connecter**. La connexion est testée aussitôt, le résultat est expliqué en clair.
 - **Sûre** : n'ouvre **aucune porte** sur le site (elle envoie, elle n'écoute rien), token chiffré, https obligatoire hors réseau privé.
@@ -61,7 +62,7 @@ Depuis WP-CLI : `wp config set SSM_CONNECTOR_TOKEN "$TOKEN" --type=constant`.
 
 | Donnée | Pourquoi |
 |---|---|
-| version de WordPress, de PHP et de la base, serveur web, nom de la machine, chemin d'installation | fiche du site dans SSM |
+| version de WordPress, de PHP et de la base, serveur web, nom de la machine, chemin d'installation, adresse du site | fiche du site dans SSM (l'adresse : suivre un passage en ligne) |
 | extensions : identifiant, nom, version, active ou non, mise à jour disponible et version proposée | suivi des mises à jour et des vulnérabilités |
 | thèmes : mêmes champs, plus le thème parent | idem |
 | version du connecteur | savoir quels sites sont à jour |
@@ -74,7 +75,12 @@ Rien d'autre : ni utilisateurs, ni contenu, ni e-mails, ni identifiants de conne
 ## Ce que SSM peut demander
 
 Rien n'est fait sans demande de SSM (bouton « Demander », ou site en politique automatique). Les demandes
-arrivent dans la réponse au heartbeat ; le compte rendu part au heartbeat suivant.
+arrivent dans la réponse au heartbeat ; le compte rendu part aussitôt après l'exécution.
+
+Toutes les deux minutes, le connecteur demande à SSM si une action l'attend (`GET <adresse>/api/v1/connector/pending`,
+avec `X-SSM-Token`, réponse `{"pending": true|false}`) et n'envoie son inventaire que si c'est le cas. Juste après
+une demande, SSM appelle `wp-cron.php` du site (la page de WordPress qui fait tourner ses tâches planifiées) pour que
+cette question parte même sans visiteur. Le connecteur n'écoute toujours rien.
 
 | Demande | Ce que fait le connecteur |
 |---|---|
