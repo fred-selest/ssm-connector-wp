@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.6.1
+ * Version: 0.7.0
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.6.1');
+define('SSM_CONNECTOR_VERSION', '0.7.0');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -48,6 +48,9 @@ class SSM_Connector {
     const OPT_LOGIN_KEY = 'ssm_login_key';            // clé de connexion directe (chiffrée)
     const OPT_VERSION_SENT = 'ssm_connector_version_sent';   // dernière version annoncée à SSM
     const OPT_SITE_ID = 'ssm_site_id';                // identifiant du site chez SSM
+    const POLL_HOOK = 'ssm_poll_event';               // question « une action m'attend-elle ? » à SSM
+    const POLL_SCHEDULE = 'ssm_two_minutes';
+    const POLL_INTERVAL = 120;
     const OPT_LOGIN_LOG = 'ssm_login_log';            // dernières connexions directes
     const OPT_LOGIN_ALLOWED = 'ssm_login_allowed';    // case « Autoriser la connexion directe » (page de l'extension)
     const OPT_LOGIN_USER = 'ssm_login_user';          // administrateur connecté (ID), 0 : le premier administrateur
@@ -80,6 +83,9 @@ class SSM_Connector {
         return self::$instance;
     }
 
+    /** Vrai pendant le renvoi qui rapporte le résultat des actions (évite une boucle d'envois). */
+    private $reporting = false;
+
     private function __construct() {
         add_action('admin_menu', [$this, 'register_admin_menu']);
         add_action('admin_notices', [$this, 'maybe_notice']);
@@ -88,6 +94,8 @@ class SSM_Connector {
         add_action('admin_post_ssm_connector_login', [$this, 'handle_login_settings']);
         add_action('wp_loaded', [$this, 'on_loaded']);
         add_action(self::HEARTBEAT_HOOK, [$this, 'send_heartbeat']);
+        add_action(self::POLL_HOOK, [$this, 'poll']);
+        add_filter('cron_schedules', [$this, 'cron_schedules']);
         add_filter('plugin_action_links_' . plugin_basename(SSM_CONNECTOR_FILE), [$this, 'action_links']);
         register_activation_hook(SSM_CONNECTOR_FILE, [$this, 'activate']);
         register_deactivation_hook(SSM_CONNECTOR_FILE, [$this, 'deactivate']);
@@ -122,7 +130,7 @@ class SSM_Connector {
     /** Ce que ce connecteur sait exécuter : SSM n'envoie rien d'autre. */
     public function capabilities() {
         $caps = ['update_extension', 'update_theme', 'update_core', 'health_check', 'plugin_activate',
-                 'plugin_deactivate', 'plugin_install', 'plugin_delete', 'php_errors'];
+                 'plugin_deactivate', 'plugin_install', 'plugin_delete', 'php_errors', 'poll'];
         if (class_exists('ZipArchive') && function_exists('curl_init')) {
             $caps[] = 'backup_site';
         }
@@ -137,15 +145,18 @@ class SSM_Connector {
     public function activate() {
         $this->maybe_upgrade();
         $this->schedule_heartbeat();
+        $this->schedule_poll();
     }
 
     public function deactivate() {
         wp_clear_scheduled_hook(self::HEARTBEAT_HOOK);
+        wp_clear_scheduled_hook(self::POLL_HOOK);
     }
 
     public function on_loaded() {
         $this->maybe_upgrade();
         $this->schedule_heartbeat();
+        $this->schedule_poll();
         $this->announce_new_version();
     }
 
@@ -159,6 +170,46 @@ class SSM_Connector {
         }
         update_option(self::OPT_VERSION_SENT, SSM_CONNECTOR_VERSION, false);
         wp_schedule_single_event(time(), self::HEARTBEAT_HOOK, ['nouvelle-version']);
+    }
+
+    // === Question « une action m'attend-elle ? » ===
+
+    /** WP-Cron : intervalle de deux minutes pour la question à SSM (WordPress n'en propose pas de si court). */
+    public function cron_schedules($schedules) {
+        $schedules[self::POLL_SCHEDULE] = ['interval' => self::POLL_INTERVAL, 'display' => 'SSM : toutes les 2 minutes'];
+        return $schedules;
+    }
+
+    /**
+     * Toutes les deux minutes, une question légère à SSM (`GET /api/v1/connector/pending`, authentifiée par le token) :
+     * une mise à jour, une action ou une sauvegarde attend-elle ? Oui : l'envoi complet part aussitôt et la reçoit.
+     * Sans cela, une demande attendait l'envoi horaire. SSM fait tourner WP-Cron en appelant wp-cron.php, la page
+     * publique de WordPress : l'extension n'ouvre aucune porte de plus sur le site.
+     */
+    public function poll() {
+        $cfg = $this->config();
+        if ($cfg['problem'] !== '' || $cfg['url'] === '' || $cfg['token'] === '') {
+            return false;
+        }
+        $response = wp_remote_get($cfg['url'] . '/api/v1/connector/pending', [
+            'headers' => ['X-SSM-Token' => $cfg['token'], 'Accept' => 'application/json'],
+            'timeout' => 10,
+            'user-agent' => 'SSM-Connector/' . SSM_CONNECTOR_VERSION,
+        ]);
+        if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) !== 200) {
+            return false;   // SSM injoignable ou plus ancien (route absente) : l'envoi horaire reste là
+        }
+        $body = json_decode((string) wp_remote_retrieve_body($response), true);
+        if (!is_array($body) || empty($body['pending'])) {
+            return false;
+        }
+        return $this->send_heartbeat();
+    }
+
+    public function schedule_poll() {
+        if (!wp_next_scheduled(self::POLL_HOOK)) {
+            wp_schedule_event(time() + self::POLL_INTERVAL, self::POLL_SCHEDULE, self::POLL_HOOK);
+        }
     }
 
     public function schedule_heartbeat() {
@@ -526,6 +577,8 @@ class SSM_Connector {
                 ? $this->cut_or_null(sanitize_text_field(wp_unslash($_SERVER['SERVER_SOFTWARE'])), 50) : null,
             'hostname' => function_exists('gethostname') ? $this->cut_or_null(gethostname(), 255) : null,
             'site_path' => $this->cut_or_null(ABSPATH, 500),
+            // adresse du site telle que WordPress la connaît : SSM propose de suivre un passage en ligne
+            'shop_url' => $this->cut_or_null(home_url('/'), 255),
             'extensions' => $this->collect_plugins(),
             'themes' => $this->collect_themes(),
             'connector_version' => SSM_CONNECTOR_VERSION,
@@ -1746,7 +1799,18 @@ class SSM_Connector {
                     } elseif (!empty($body['login_key']) && is_string($body['login_key'])) {
                         update_option(self::OPT_LOGIN_KEY, self::protect($body['login_key']), false);
                     }
-                    $this->apply_commands(is_array($body['commands'] ?? null) ? $body['commands'] : []);
+                    $commands = is_array($body['commands'] ?? null) ? $body['commands'] : [];
+                    $this->apply_commands($commands);
+                    if ($commands && !$this->reporting) {
+                        // le résultat des actions part tout de suite, pas à l'envoi horaire suivant (un seul
+                        // renvoi : s'il rapporte d'autres actions, leur résultat attendra l'envoi suivant)
+                        $this->reporting = true;
+                        try {
+                            $this->send_heartbeat();
+                        } finally {
+                            $this->reporting = false;
+                        }
+                    }
                 }
             }
         } catch (\Throwable $e) {

@@ -6,6 +6,7 @@ if (!defined('WP_UNINSTALL_PLUGIN')) {
 }
 
 wp_clear_scheduled_hook('ssm_heartbeat_event');
+wp_clear_scheduled_hook('ssm_poll_event');
 delete_site_transient('ssm_connector_release');
 
 foreach ([
