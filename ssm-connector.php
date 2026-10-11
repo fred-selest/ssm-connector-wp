@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.7.1
+ * Version: 0.8.0
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.7.1');
+define('SSM_CONNECTOR_VERSION', '0.8.0');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -130,7 +130,7 @@ class SSM_Connector {
     /** Ce que ce connecteur sait exécuter : SSM n'envoie rien d'autre. */
     public function capabilities() {
         $caps = ['update_extension', 'update_theme', 'update_core', 'health_check', 'plugin_activate',
-                 'plugin_deactivate', 'plugin_install', 'plugin_delete', 'php_errors', 'poll'];
+                 'plugin_deactivate', 'plugin_install', 'plugin_install_package', 'plugin_delete', 'php_errors', 'poll'];
         if (class_exists('ZipArchive') && function_exists('curl_init')) {
             $caps[] = 'backup_site';
         }
@@ -1072,7 +1072,7 @@ class SSM_Connector {
             return;
         }
         if ($kind === 'plugin_install') {
-            $this->install_plugin($id, $slug, $file);
+            $this->install_plugin($id, $slug, $file, $params);
             return;
         }
         if ($file === null) {
@@ -1120,12 +1120,42 @@ class SSM_Connector {
         $this->queue_command_result($id, 'success');
     }
 
-    /** Installation depuis le répertoire officiel uniquement (le paquet doit venir de downloads.wordpress.org). */
-    private function install_plugin($id, $slug, $file) {
+    /**
+     * Sources d'où une archive d'extension peut être installée en dehors de wordpress.org : par défaut les releases
+     * GitHub de fred-selest (WP Migration…). Une adresse hors de cette liste est refusée, quoi que SSM demande.
+     * Filtre `ssm_connector_package_sources` pour en changer.
+     */
+    public function package_sources() {
+        $sources = apply_filters('ssm_connector_package_sources', ['https://github.com/fred-selest/']);
+        return is_array($sources) ? array_values(array_filter($sources, 'is_string')) : [];
+    }
+
+    /** L'adresse d'une archive est acceptée si elle est en https, vient d'une release d'une source connue et finit par .zip. */
+    private function package_allowed($url) {
+        if (!is_string($url) || strlen($url) > 500 || strpos($url, '..') !== false || !preg_match('/\.zip$/i', $url)) {
+            return false;
+        }
+        if (strpos($url, '/releases/download/') === false || preg_match('/[\s?#@\\\\]/', $url)) {
+            return false;
+        }
+        foreach ($this->package_sources() as $prefix) {
+            if (strpos($prefix, 'https://') === 0 && strpos($url, $prefix) === 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Installation : depuis le répertoire officiel (le paquet doit venir de downloads.wordpress.org) ou, si SSM transmet
+     * `package_url`, depuis une archive d'une source de la liste blanche (extension maison, voir package_sources()).
+     */
+    private function install_plugin($id, $slug, $file, $params = []) {
         if ($file !== null) {
             $this->queue_command_result($id, 'success', 'déjà installée');
             return;
         }
+        $package = isset($params['package_url']) ? $params['package_url'] : null;
         foreach (['plugin-install.php', 'file.php', 'misc.php', 'class-wp-upgrader.php'] as $f) {
             if (file_exists(ABSPATH . 'wp-admin/includes/' . $f)) {
                 require_once ABSPATH . 'wp-admin/includes/' . $f;
@@ -1135,14 +1165,23 @@ class SSM_Connector {
             $this->queue_command_result($id, 'failed', "Le module d'installation de WordPress est indisponible.");
             return;
         }
-        $api = plugins_api('plugin_information', ['slug' => $slug, 'fields' => ['sections' => false]]);
-        if (is_wp_error($api) || !is_object($api) || empty($api->download_link)) {
-            $this->queue_command_result($id, 'failed', 'Extension « ' . $slug . ' » inconnue du répertoire wordpress.org.');
-            return;
-        }
-        if (strpos((string) $api->download_link, 'https://downloads.wordpress.org/') !== 0) {
-            $this->queue_command_result($id, 'failed', 'Paquet refusé : il ne vient pas de downloads.wordpress.org.');
-            return;
+        if ($package !== null) {
+            if (!$this->package_allowed($package)) {
+                $this->queue_command_result($id, 'failed', "Archive refusée : elle ne vient pas d'une source autorisée par ce connecteur.");
+                return;
+            }
+            $download = $package;
+        } else {
+            $api = plugins_api('plugin_information', ['slug' => $slug, 'fields' => ['sections' => false]]);
+            if (is_wp_error($api) || !is_object($api) || empty($api->download_link)) {
+                $this->queue_command_result($id, 'failed', 'Extension « ' . $slug . ' » inconnue du répertoire wordpress.org.');
+                return;
+            }
+            if (strpos((string) $api->download_link, 'https://downloads.wordpress.org/') !== 0) {
+                $this->queue_command_result($id, 'failed', 'Paquet refusé : il ne vient pas de downloads.wordpress.org.');
+                return;
+            }
+            $download = $api->download_link;
         }
         if (!$this->disk_writable(WP_PLUGIN_DIR)) {
             $this->queue_command_result($id, 'failed', "Le dossier des extensions n'est pas accessible en écriture.");
@@ -1154,7 +1193,7 @@ class SSM_Connector {
         add_filter('request_filesystem_credentials', [$this, 'grant_filesystem'], 10, 2);
         try {
             $upgrader = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
-            $r = $upgrader->install($api->download_link);
+            $r = $upgrader->install($download);
         } catch (\Throwable $e) {
             $r = new WP_Error('ssm', $e->getMessage());
         } finally {
@@ -1162,6 +1201,16 @@ class SSM_Connector {
         }
         if (is_wp_error($r) || $r === false || $this->plugin_file($slug) === null) {
             $this->queue_command_result($id, 'failed', is_wp_error($r) ? $r->get_error_message() : "WordPress n'a pas installé l'extension.");
+            return;
+        }
+        if ($package !== null && !empty($params['activate'])) {
+            $installed = $this->plugin_file($slug);
+            $a = activate_plugin($installed);
+            if (is_wp_error($a) || !is_plugin_active($installed)) {
+                $this->queue_command_result($id, 'success', 'installée, mais non activée : ' . (is_wp_error($a) ? $a->get_error_message() : "WordPress n'a pas activé l'extension."));
+                return;
+            }
+            $this->queue_command_result($id, 'success', 'installée et activée');
             return;
         }
         $this->queue_command_result($id, 'success', 'installée, non activée');

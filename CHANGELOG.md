@@ -4,6 +4,16 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), ver
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-11
+
+### Ajouté
+- **Installer une extension qui n'est pas sur wordpress.org** (capacité `plugin_install_package`). Pour installer
+  WP Migration sur les sites depuis SSM, sans téléverser un ZIP à la main : SSM transmet l'adresse de l'archive de la
+  dernière release, le connecteur l'installe et, si demandé, l'active. L'archive n'est téléchargée que d'une source
+  de la liste blanche : par défaut `https://github.com/fred-selest/` (releases uniquement, en https, fichier `.zip`,
+  sans paramètre ni remontée de dossier). Filtre `ssm_connector_package_sources` pour la changer. Une adresse hors
+  de la liste est refusée, quoi que SSM demande ; l'installation depuis wordpress.org reste inchangée.
+
 ## [0.7.1] - 2026-10-11
 
 ### Corrigé
