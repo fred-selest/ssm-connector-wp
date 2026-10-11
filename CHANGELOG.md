@@ -4,6 +4,16 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), ver
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-12
+
+### Ajouté
+- **Stockage fourni par SSM à WP Migration** (capacité `storage_broker`). Deux filtres WordPress que WP Migration appelle
+  à la place de ses propres clés S3 : `ssm_connector_storage_available` (le connecteur est-il configuré ?) et
+  `ssm_connector_storage_sign` (demande à SSM de signer UNE requête S3, dans le dossier de ce site). SSM renvoie une URL
+  pré-signée valable pour cette seule requête : **la clé du compartiment reste dans SSM** et ne descend jamais sur le site.
+  Les erreurs de SSM (aucun point de sauvegarde pour ce site, jeton refusé, SSM plus ancien) deviennent des messages prêts à
+  afficher, sans jamais contenir l'URL signée. Nécessite SSM 2.22 ou plus. Aucune route ouverte sur le site.
+
 ## [0.8.1] - 2026-10-11
 
 ### Corrigé

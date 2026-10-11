@@ -621,15 +621,15 @@ const REPO_URL = 'https://github.com/fred-selest/ssm-connector-wp';
 
 function release_json(array $override = []) {
     return array_merge([
-        'tag_name' => 'v0.9.0',
+        'tag_name' => 'v0.99.0',
         'draft' => false,
         'prerelease' => false,
-        'html_url' => REPO_URL . '/releases/tag/v0.9.0',
+        'html_url' => REPO_URL . '/releases/tag/v0.99.0',
         'body' => "### Corrigé\n- un truc",
         'published_at' => '2026-10-05T10:00:00Z',
         'assets' => [
-            ['name' => 'ssm-connector-wp-v0.9.0.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.9.0/ssm-connector-wp-v0.9.0.zip', 'digest' => 'sha256:' . str_repeat('11', 32)],
-            ['name' => 'ssm-connector-wp.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.9.0/ssm-connector-wp.zip', 'digest' => 'sha256:' . str_repeat('ab', 32)],
+            ['name' => 'ssm-connector-wp-v0.99.0.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.99.0/ssm-connector-wp-v0.99.0.zip', 'digest' => 'sha256:' . str_repeat('11', 32)],
+            ['name' => 'ssm-connector-wp.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.99.0/ssm-connector-wp.zip', 'digest' => 'sha256:' . str_repeat('ab', 32)],
         ],
     ], $override);
 }
@@ -648,8 +648,8 @@ test("mises à jour : lecture stricte d'une release", function () {
     $u = updater();
     $r = $u->parse_release(release_json());
     check($r['ok'], 'release valide acceptée');
-    same($r['release']['version'], '0.9.0', 'version sans le v');
-    same($r['release']['package'], REPO_URL . '/releases/download/v0.9.0/ssm-connector-wp.zip', "c'est le ZIP à nom stable qui est choisi");
+    same($r['release']['version'], '0.99.0', 'version sans le v');
+    same($r['release']['package'], REPO_URL . '/releases/download/v0.99.0/ssm-connector-wp.zip', "c'est le ZIP à nom stable qui est choisi");
     same($r['release']['sha256'], str_repeat('ab', 32), 'somme SHA-256 de ce ZIP');
     same($u->parse_release(release_json(['tag_name' => '0.4.0']))['release']['version'], '0.4.0', 'tag sans v accepté');
     foreach (['latest', 'v0.4', 'v1.0.0-beta', ' v0.4.0', "v0.4.0\n", '', 'v0.4.0.1', 'v0.4.x'] as $bad) {
@@ -657,7 +657,7 @@ test("mises à jour : lecture stricte d'une release", function () {
     }
     check(!$u->parse_release(release_json(['draft' => true]))['ok'], 'brouillon refusé');
     check(!$u->parse_release(release_json(['prerelease' => true]))['ok'], 'préversion refusée');
-    check(!$u->parse_release(release_json(['assets' => [['name' => 'autre.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.9.0/autre.zip']]]))['ok'], 'ZIP manquant refusé');
+    check(!$u->parse_release(release_json(['assets' => [['name' => 'autre.zip', 'browser_download_url' => REPO_URL . '/releases/download/v0.99.0/autre.zip']]]))['ok'], 'ZIP manquant refusé');
     check(!$u->parse_release(release_json(['assets' => 'x']))['ok'], 'assets invalide refusé');
 });
 
@@ -665,8 +665,8 @@ test("mises à jour : le paquet doit venir des releases du dépôt", function ()
     $u = updater();
     foreach ([
         'https://evil.example/ssm-connector-wp.zip',
-        'https://github.com/autre/depot/releases/download/v0.9.0/ssm-connector-wp.zip',
-        'http://github.com/fred-selest/ssm-connector-wp/releases/download/v0.9.0/ssm-connector-wp.zip',
+        'https://github.com/autre/depot/releases/download/v0.99.0/ssm-connector-wp.zip',
+        'http://github.com/fred-selest/ssm-connector-wp/releases/download/v0.99.0/ssm-connector-wp.zip',
         'https://github.com.evil.example/fred-selest/ssm-connector-wp/releases/download/v0/ssm-connector-wp.zip',
         'https://github.com/fred-selest/ssm-connector-wp-evil/releases/download/v0/ssm-connector-wp.zip',
     ] as $url) {
@@ -677,7 +677,7 @@ test("mises à jour : le paquet doit venir des releases du dépôt", function ()
 
 test("mises à jour : somme de contrôle absente tolérée, présente mais illisible refusée", function () {
     $u = updater();
-    $zip = REPO_URL . '/releases/download/v0.9.0/ssm-connector-wp.zip';
+    $zip = REPO_URL . '/releases/download/v0.99.0/ssm-connector-wp.zip';
     $none = $u->parse_release(release_json(['assets' => [['name' => 'ssm-connector-wp.zip', 'browser_download_url' => $zip]]]));
     check($none['ok'] && $none['release']['sha256'] === null, 'sans somme : acceptée, non contrôlée');
     foreach (['sha1:' . str_repeat('a', 40), 'sha256:xyz', 'sha256:' . str_repeat('AB', 32), 'sha256:' . str_repeat('a', 63), ['sha256']] as $bad) {
@@ -732,8 +732,8 @@ test("mises à jour : WordPress reçoit la nouvelle version", function () {
     $t = (object) ['response' => ['autre/autre.php' => (object) ['new_version' => '2.0']], 'no_update' => [], 'checked' => []];
     $out = $u->inject($t);
     $e = $out->response['ssm-connector/ssm-connector.php'];
-    same($e->new_version, '0.9.0', 'nouvelle version');
-    same($e->package, REPO_URL . '/releases/download/v0.9.0/ssm-connector-wp.zip', 'paquet');
+    same($e->new_version, '0.99.0', 'nouvelle version');
+    same($e->package, REPO_URL . '/releases/download/v0.99.0/ssm-connector-wp.zip', 'paquet');
     same($e->slug, 'ssm-connector', 'slug = dossier');
     same($e->plugin, 'ssm-connector/ssm-connector.php', 'fichier du plugin');
     check(!empty($e->icons['1x']) && !empty($e->icons['2x']) && !empty($e->icons['svg']), 'icônes fournies');
@@ -758,11 +758,11 @@ test("mises à jour : juste après l'installation, la version du disque fait foi
     // Sans lecture du disque, la version qui vient d'être installée resterait proposée pendant 12 h.
     $u = updater();
     github_returns(200, release_json());       // 0.9.0 disponible sur GitHub
-    $GLOBALS['ssm_disk_version'] = '0.9.0';   // et c'est celle-ci qu'on vient d'installer
-    $out = $u->inject((object) ['response' => ['ssm-connector/ssm-connector.php' => (object) ['new_version' => '0.9.0']]]);
+    $GLOBALS['ssm_disk_version'] = '0.99.0';   // et c'est celle-ci qu'on vient d'installer
+    $out = $u->inject((object) ['response' => ['ssm-connector/ssm-connector.php' => (object) ['new_version' => '0.99.0']]]);
     check(!isset($out->response['ssm-connector/ssm-connector.php']), 'la version installée n\'est plus proposée');
     $e = $out->no_update['ssm-connector/ssm-connector.php'] ?? null;
-    check($e !== null && $e->new_version === '0.9.0' && $e->package === '', 'entrée no_update à la version du disque');
+    check($e !== null && $e->new_version === '0.99.0' && $e->package === '', 'entrée no_update à la version du disque');
     $GLOBALS['ssm_disk_version'] = '0.4.0';   // avant la mise à jour, c'est 0.4.0 qui est installée
     $out = $u->inject((object) []);
     check(isset($out->response['ssm-connector/ssm-connector.php']), 'avant la mise à jour, 0.9.0 reste proposée');
@@ -784,8 +784,8 @@ test("mises à jour : fenêtre « Afficher les détails »", function () {
     github_returns(200, release_json(['body' => '<script>alert(1)</script> & notes']));
     $u->state();
     $info = $u->plugin_information(false, 'plugin_information', (object) ['slug' => 'ssm-connector']);
-    same($info->version, '0.9.0', 'version');
-    same($info->download_link, REPO_URL . '/releases/download/v0.9.0/ssm-connector-wp.zip', 'lien');
+    same($info->version, '0.99.0', 'version');
+    same($info->download_link, REPO_URL . '/releases/download/v0.99.0/ssm-connector-wp.zip', 'lien');
     check(strpos($info->sections['changelog'], '<script>') === false && strpos($info->sections['changelog'], '&lt;script&gt;') !== false, 'notes échappées');
     same($u->plugin_information(false, 'plugin_information', (object) ['slug' => 'autre']), false, 'autre extension : inchangé');
     same($u->plugin_information('x', 'query_plugins', (object) ['slug' => 'ssm-connector']), 'x', 'autre action : inchangé');
@@ -798,7 +798,7 @@ test("mises à jour : contrôle de la somme SHA-256 avant installation", functio
     $file = tempnam(sys_get_temp_dir(), 'ssmzip');
     file_put_contents($file, 'contenu du zip');
     $sum = hash('sha256', 'contenu du zip');
-    $pkg = REPO_URL . '/releases/download/v0.9.0/ssm-connector-wp.zip';
+    $pkg = REPO_URL . '/releases/download/v0.99.0/ssm-connector-wp.zip';
     $GLOBALS['ssm_download'] = function ($url) use ($file) { return $file; };
 
     github_returns(200, release_json(['assets' => [['name' => 'ssm-connector-wp.zip', 'browser_download_url' => $pkg, 'digest' => "sha256:$sum"]]]));
@@ -1125,6 +1125,47 @@ test("actions : un dossier d'extension avec des majuscules est accepté, un chem
     $n = count($GLOBALS['ssm_opts']['ssm_command_results']);
     same($GLOBALS['ssm_opts']['ssm_command_results'][$n - 2]['status'], 'success', 'dossier en majuscules désactivé');
     same($GLOBALS['ssm_opts']['ssm_command_results'][$n - 1]['status'], 'failed', 'chemin refusé');
+});
+
+test("stockage fourni par SSM : une URL signée par requête, jamais une clé ; erreurs expliquées sans l'URL", function () use ($ssm) {
+    $inv = $ssm->collect_inventory();
+    check(in_array('storage_broker', $inv['capabilities'], true), 'capacité storage_broker');
+    check($ssm->storage_available() === false, 'indisponible tant que SSM n\'est pas configuré');
+    check(is_wp_error($ssm->storage_sign(null, ['method' => 'GET', 'key' => 'a'])), 'refus clair sans configuration');
+    configure();
+    check($ssm->storage_available() === true, 'disponible une fois configuré');
+    $calls = [];
+    $GLOBALS['ssm_http'] = function ($url, $args) use (&$calls) {
+        $calls[] = ['url' => $url, 'args' => $args];
+        return ['code' => 200, 'body' => json_encode(['url' => 'https://s3.exemple.fr/b/ssm/x/wp-migration/a?X-Amz-Signature=zz', 'method' => 'PUT',
+                                                       'base' => 'ssm/x/wp-migration/', 'expires_in' => 600])];
+    };
+    $r = $ssm->storage_sign(null, ['method' => 'put', 'key' => 's/a.wpmig', 'query' => ['partNumber' => 2, 'uploadId' => 'u'], 'expires' => 600]);
+    same($r['url'], 'https://s3.exemple.fr/b/ssm/x/wp-migration/a?X-Amz-Signature=zz', 'URL rendue');
+    same([$r['method'], $r['base'], $r['expires_in']], ['PUT', 'ssm/x/wp-migration/', 600], 'base et durée rendues');
+    same($calls[0]['url'], 'https://ssm.exemple.fr/api/v1/connector/storage/sign', 'appelle la route de SSM');
+    same($calls[0]['args']['headers']['X-SSM-Token'], TOKEN_A, 'jeton du site en en-tête');
+    $sent = json_decode($calls[0]['args']['body'], true);
+    same($sent, ['method' => 'PUT', 'key' => 's/a.wpmig', 'query' => ['partNumber' => '2', 'uploadId' => 'u'], 'expires' => 600], 'corps envoyé');
+    check(strpos(json_encode($calls), 'secret') === false, 'aucune clé ne circule');
+    // une requête d\'objet sans paramètre part avec un objet JSON vide (pas un tableau)
+    $ssm->storage_sign(null, ['method' => 'GET', 'key' => 'a']);
+    check(strpos($calls[1]['args']['body'], '"query":{}') !== false, 'query vide = objet JSON');
+    foreach ([['method' => 'TRACE', 'key' => 'a'], []] as $bad) {
+        check(is_wp_error($ssm->storage_sign(null, $bad)), 'méthode refusée : ' . json_encode($bad));
+    }
+    foreach ([[409, ['detail' => 'Aucun point de sauvegarde n\'est configuré pour ce site dans SSM'], 'point de sauvegarde'],
+              [401, ['detail' => 'x'], 'refusé le token'], [404, [], 'mettez SSM à jour'], [422, ['detail' => 'Clé refusée'], 'Clé refusée'],
+              [500, [], 'HTTP 500']] as $case) {
+        core_replies($case[0], $case[1]);
+        $e = $ssm->storage_sign(null, ['method' => 'GET', 'key' => 'a']);
+        check(is_wp_error($e) && strpos($e->get_error_message(), $case[2]) !== false, 'erreur ' . $case[0] . ' : ' . (is_wp_error($e) ? $e->get_error_message() : 'pas une erreur'));
+        check(is_wp_error($e) && strpos($e->get_error_message(), 'http') === false, 'aucune adresse dans le message ' . $case[0]);
+    }
+    core_replies(200, ['url' => 'ftp://exemple/x']);
+    check(is_wp_error($ssm->storage_sign(null, ['method' => 'GET', 'key' => 'a'])), 'une adresse qui n\'est pas http(s) est refusée');
+    $GLOBALS['ssm_http'] = function () { return new WP_Error('http_request_failed', 'cURL error 6'); };
+    check(is_wp_error($ssm->storage_sign(null, ['method' => 'GET', 'key' => 'a'])), 'SSM injoignable : erreur');
 });
 
 test("erreurs PHP : journal lu par morceaux, chemins relatifs, regroupement", function () use ($ssm) {
