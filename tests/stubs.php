@@ -30,6 +30,7 @@ $GLOBALS['ssm_screen'] = null;        // identifiant de l'écran d'administratio
 $GLOBALS['ssm_disk_version'] = null; // version écrite dans le fichier sur disque (null = celle du fichier réel)
 
 function add_action($hook, $cb, $priority = 10, $args = 1) { $GLOBALS['ssm_hooks'][$hook][] = $cb; }
+function apply_filters($hook, $value) { return array_key_exists($hook, $GLOBALS['ssm_filters'] ?? []) ? $GLOBALS['ssm_filters'][$hook] : $value; }
 function add_filter($hook, $cb, $priority = 10, $args = 1) { $GLOBALS['ssm_hooks'][$hook][] = $cb; }
 function plugin_basename($file) { return 'ssm-connector/ssm-connector.php'; }
 function plugins_url($path, $plugin) { return 'https://exemple.test/wp-content/plugins/ssm-connector/' . $path; }
@@ -202,7 +203,8 @@ class Plugin_Upgrader {
         return true;
     }
     public function install($package) {
-        $slug = basename($package, '.zip');
+        // l'archive d'une release s'appelle « nom-1.2.3.zip » mais contient le dossier « nom »
+        $slug = $GLOBALS['ssm_install_slug'] ?? basename($package, '.zip');
         $GLOBALS['ssm_plugins'][$slug . '/' . $slug . '.php'] = ['Name' => $slug, 'Version' => '1.0'];
         return true;
     }

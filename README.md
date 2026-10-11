@@ -87,7 +87,7 @@ cette question parte même sans visiteur. Le connecteur n'écoute toujours rien.
 | mise à jour d'une extension ou d'un thème | sauvegarde du dossier, mise à jour, version relue sur le disque, contrôle de la page d'accueil ; retour à la version précédente si le site casse |
 | mise à jour du cœur | contrôle avant et après ; **pas de retour arrière automatique** (un site cassé est rapporté) |
 | activer, désactiver, supprimer une extension | jamais une extension active supprimée, jamais le connecteur lui-même |
-| installer une extension | depuis wordpress.org uniquement, non activée |
+| installer une extension | depuis wordpress.org (non activée) ; ou, si SSM transmet une archive, depuis une release GitHub de `fred-selest` (liste blanche `ssm_connector_package_sources`), activée si demandé |
 | sauvegarder le site | `database.sql` + `wp-config.php` + `wp-content` dans un zip, déposé sur l'URL pré-signée du stockage S3 de l'agence (SSM ne voit pas passer l'archive) |
 
 ## Connexion directe depuis SSM (facultative)

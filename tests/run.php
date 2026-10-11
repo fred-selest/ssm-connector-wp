@@ -1086,6 +1086,36 @@ test("actions : le connecteur ne se désactive pas lui-même, et le paquet doit 
     same(action_result(1)['status'], 'failed', 'paquet hors wordpress.org refusé');
 });
 
+test("installation d'une archive : seulement d'une source de la liste blanche, activée si demandé", function () use ($ssm) {
+    $ok = 'https://github.com/fred-selest/wp-migration/releases/download/v1.16.1/wp-migration-1.16.1.zip';
+    $GLOBALS['ssm_install_slug'] = 'wp-migration';
+    $inv = $ssm->collect_inventory();
+    check(in_array('plugin_install_package', $inv['capabilities'], true), 'capacité plugin_install_package');
+    $refuses = [
+        'https://evil.example/fred-selest/x/releases/download/v1/x.zip' => 'autre domaine',
+        'https://github.com/evil/x/releases/download/v1/x.zip' => 'autre propriétaire',
+        'http://github.com/fred-selest/x/releases/download/v1/x.zip' => 'pas en https',
+        'https://github.com/fred-selest/x/archive/refs/heads/main.zip' => 'pas une release',
+        'https://github.com/fred-selest/../evil/x/releases/download/v1/x.zip' => 'remontée de dossier',
+        'https://github.com/fred-selest/x/releases/download/v1/x.php' => 'pas une archive',
+        'https://github.com/fred-selest/x/releases/download/v1/x.zip?a=b' => 'paramètres',
+    ];
+    $i = 10;
+    foreach ($refuses as $url => $why) {
+        $ssm->apply_commands([['id' => ++$i, 'ref' => 'command', 'kind' => 'plugin_install', 'slug' => 'wp-migration',
+                               'params' => ['package_url' => $url]]]);
+        same(action_result($i - 11)['status'], 'failed', "refusée : $why");
+    }
+    check(!isset($GLOBALS['ssm_plugins']['wp-migration/wp-migration.php']), 'rien installé par les refus');
+    $ssm->apply_commands([['id' => 30, 'ref' => 'command', 'kind' => 'plugin_install', 'slug' => 'wp-migration',
+                           'params' => ['package_url' => $ok, 'activate' => true]]]);
+    $r = action_result(count($refuses));
+    same([$r['status'], $r['error'] ?? null], ['success', 'installée et activée'], 'installée');
+    check(isset($GLOBALS['ssm_plugins']['wp-migration/wp-migration.php']), 'présente sur le site');
+    same($GLOBALS['ssm_active']['wp-migration/wp-migration.php'] ?? false, true, 'activée');
+    unset($GLOBALS['ssm_install_slug']);
+});
+
 test("erreurs PHP : journal lu par morceaux, chemins relatifs, regroupement", function () use ($ssm) {
     $log = WP_CONTENT_DIR . '/php-errors.log';
     ini_set('error_log', $log);
