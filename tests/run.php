@@ -1200,6 +1200,30 @@ test("mise a jour : WordPress reçoit le fichier principal de l'extension, pas s
     same($GLOBALS['ssm_opts']['ssm_update_results'][0]['status'], 'success', 'mise à jour réussie');
 });
 
+test("plusieurs mises à jour dans un lot : WordPress vide sa liste après chacune, le connecteur la reconstitue", function () use ($ssm) {
+    // Constaté en production (ottenwaelder.fr) : la 1re extension réussit, les six suivantes échouent « sans détail », parce que
+    // Plugin_Upgrader::upgrade() refuse toute extension absente de la liste que WordPress vient d'effacer.
+    $GLOBALS['ssm_wp_strict'] = true;
+    $GLOBALS['ssm_plugins']['honeypot/honeypot.php'] = ['Name' => 'Honeypot', 'Version' => '2.3'];
+    @mkdir(WP_PLUGIN_DIR . '/honeypot', 0777, true);   // le connecteur sauvegarde le dossier avant de mettre à jour
+    file_put_contents(WP_PLUGIN_DIR . '/honeypot/honeypot.php', "<?php\n/* Version: 2.3 */\n");
+    $liste = (object) ['last_checked' => time(), 'response' => [
+        'akismet/akismet.php' => (object) ['new_version' => '9.9.9'],
+        'honeypot/honeypot.php' => (object) ['new_version' => '2.4'],
+    ]];
+    $GLOBALS['ssm_refresh_plugins'] = $liste;   // ce que wordpress.org répond quand on recalcule
+    $GLOBALS['ssm_transients']['update_plugins'] = $liste;
+    $GLOBALS['ssm_plugin_upgrade_version'] = '99.0';   // version relue sur le disque après chaque mise à jour
+    $ssm->apply_commands([
+        ['id' => 70, 'kind' => 'update_extension', 'slug' => 'akismet', 'to_version' => '9.9.9'],
+        ['id' => 71, 'kind' => 'update_extension', 'slug' => 'honeypot', 'to_version' => '2.4'],
+    ]);
+    same($GLOBALS['ssm_upgraded'], ['akismet/akismet.php', 'honeypot/honeypot.php'], 'les deux extensions sont mises à jour');
+    $statuts = array_map(function ($r) { return $r['status']; }, $GLOBALS['ssm_opts']['ssm_update_results']);
+    same($statuts, ['success', 'success'], 'les deux comptes rendus sont des réussites');
+    unset($GLOBALS['ssm_wp_strict'], $GLOBALS['ssm_refresh_plugins'], $GLOBALS['ssm_plugin_upgrade_version']);
+});
+
 test("extension d'un seul fichier : action, mise à jour, sauvegarde et restauration", function () use ($ssm) {
     file_put_contents(WP_PLUGIN_DIR . '/hello.php', "<?php\n/* Version: 1.7.2 */\n");
     $ssm->apply_commands([['id' => 60, 'ref' => 'command', 'kind' => 'plugin_activate', 'slug' => 'hello']]);

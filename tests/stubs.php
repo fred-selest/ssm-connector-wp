@@ -174,8 +174,19 @@ class Plugin_Upgrader {
         if (!isset($GLOBALS['ssm_plugins'][$plugin])) {
             return false;
         }
+        // comme le vrai : une extension absente de la liste de mises à jour de WordPress est refusée sans détail ;
+        // et WordPress vide cette liste après chaque mise à jour réussie (wp_clean_plugins_cache)
+        if (!empty($GLOBALS['ssm_wp_strict'])) {
+            $liste = get_site_transient('update_plugins');
+            if (!is_object($liste) || !isset($liste->response[$plugin])) {
+                return false;
+            }
+        }
         if (!$GLOBALS['ssm_upgrade_ok']) {
             return new WP_Error('upgrader', 'échec simulé du paquet.');
+        }
+        if (!empty($GLOBALS['ssm_wp_strict'])) {
+            unset($GLOBALS['ssm_transients']['update_plugins']);
         }
         $GLOBALS['ssm_upgraded'][] = $plugin;
         if (!empty($GLOBALS['ssm_deactivate_on_upgrade'])) {
