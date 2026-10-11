@@ -4,6 +4,13 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), ver
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-11
+
+### Corrigé
+- **Activer, désactiver, installer ou supprimer une extension dont le dossier porte des majuscules échouait**
+  (« Identifiant d'extension refusé »), par exemple `All-In-One-WP-Migration-Pro-master`, installée depuis GitHub. Le
+  contrôle de l'identifiant admet les majuscules ; il refuse toujours `/`, les espaces et `..`.
+
 ## [0.8.0] - 2026-10-11
 
 ### Ajouté

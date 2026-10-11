@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.8.0
+ * Version: 0.8.1
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.8.0');
+define('SSM_CONNECTOR_VERSION', '0.8.1');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -1058,7 +1058,7 @@ class SSM_Connector {
             $this->queue_command_result($id, 'failed', 'Action inconnue : ' . $kind);
             return;
         }
-        if (!preg_match('/^[a-z0-9][a-z0-9._-]*$/', $slug)) {
+        if (!preg_match('/^[a-z0-9][a-z0-9._-]*$/i', $slug)) {
             $this->queue_command_result($id, 'failed', "Identifiant d'extension refusé : " . $slug);
             return;
         }

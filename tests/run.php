@@ -1116,6 +1116,17 @@ test("installation d'une archive : seulement d'une source de la liste blanche, a
     unset($GLOBALS['ssm_install_slug']);
 });
 
+test("actions : un dossier d'extension avec des majuscules est accepté, un chemin non", function () use ($ssm) {
+    $GLOBALS['ssm_plugins']['All-In-One-WP-Migration-Pro-master/all-in-one-wp-migration.php'] = ['Name' => 'All-in-One WP Migration Pro', 'Version' => '6.77'];
+    $ssm->apply_commands([
+        ['id' => 80, 'ref' => 'command', 'kind' => 'plugin_deactivate', 'slug' => 'All-In-One-WP-Migration-Pro-master'],
+        ['id' => 81, 'ref' => 'command', 'kind' => 'plugin_deactivate', 'slug' => '../All-In-One'],
+    ]);
+    $n = count($GLOBALS['ssm_opts']['ssm_command_results']);
+    same($GLOBALS['ssm_opts']['ssm_command_results'][$n - 2]['status'], 'success', 'dossier en majuscules désactivé');
+    same($GLOBALS['ssm_opts']['ssm_command_results'][$n - 1]['status'], 'failed', 'chemin refusé');
+});
+
 test("erreurs PHP : journal lu par morceaux, chemins relatifs, regroupement", function () use ($ssm) {
     $log = WP_CONTENT_DIR . '/php-errors.log';
     ini_set('error_log', $log);
