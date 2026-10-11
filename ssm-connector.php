@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.7.0
+ * Version: 0.7.1
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.7.0');
+define('SSM_CONNECTOR_VERSION', '0.7.1');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -968,6 +968,9 @@ class SSM_Connector {
             return 'Le module de mise à jour de WordPress est indisponible sur cette installation.';
         }
         add_filter('request_filesystem_credentials', [$this, 'grant_any_filesystem'], 10, 2);
+        if ($class === 'Theme_Upgrader') {
+            $this->update_state('update_themes', 'wp_update_themes');   // même raison que pour les extensions
+        }
         try {
             $qualified = '\\' . $class;
             $upgrader = new $qualified(new \Automatic_Upgrader_Skin());
@@ -980,7 +983,10 @@ class SSM_Connector {
         if (is_wp_error($res)) {
             return $res->get_error_message();
         }
-        return $res === false ? 'WordPress a refusé la mise à jour sans détail.' : null;
+        if ($res === false) {
+            return $class === 'Theme_Upgrader' ? $this->refusal_reason('update_themes', $slug) : 'WordPress a refusé la mise à jour sans détail.';
+        }
+        return null;
     }
 
     public function grant_any_filesystem($credentials = false, $context = '') {
@@ -1735,6 +1741,10 @@ class SSM_Connector {
         if ($fichier === null) {
             return 'Extension « ' . $slug . ' » introuvable sur ce site.';
         }
+        // WordPress vide sa liste de mises à jour après chaque mise à jour réussie, et Plugin_Upgrader::upgrade() refuse sans
+        // détail toute extension qui n'y figure pas : sans cette ligne, la 1re extension d'un lot réussissait et toutes les
+        // suivantes échouaient (constaté en production, six sur huit).
+        $this->update_state('update_plugins', 'wp_update_plugins');
         try {
             $upgrader = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
             $resultat = $upgrader->upgrade($fichier);
@@ -1751,9 +1761,21 @@ class SSM_Connector {
             return $resultat->get_error_message();
         }
         if ($resultat === false) {
-            return 'WordPress a refusé la mise à jour sans détail.';
+            return $this->refusal_reason('update_plugins', $fichier);
         }
         return null;
+    }
+
+    /**
+     * Pourquoi WordPress refuse « sans détail » : le plus souvent, l'extension n'est plus annoncée comme obsolète (déjà mise à
+     * jour depuis la demande, ou version retirée de wordpress.org) ; sinon on ne sait pas, et on le dit.
+     */
+    private function refusal_reason($transient, $key) {
+        $state = get_site_transient($transient);
+        if (is_object($state) && !isset($state->response[$key])) {
+            return 'WordPress n\'annonce plus de mise à jour pour cette extension (déjà à jour, ou version retirée de wordpress.org).';
+        }
+        return 'WordPress a refusé la mise à jour sans détail.';
     }
 
     /**
