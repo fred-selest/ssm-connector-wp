@@ -4,6 +4,18 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), ver
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-11
+
+### Corrigé
+- **Mises à jour d'extensions : seule la première d'un lot réussissait.** En production (ottenwaelder.fr), sur huit
+  extensions demandées ensemble, une réussissait (akismet), le thème aussi, et six échouaient « WordPress a refusé la
+  mise à jour sans détail », le site étant remis à l'état précédent. Cause : `Plugin_Upgrader::upgrade()` refuse sans
+  détail toute extension absente de la liste de mises à jour de WordPress, et WordPress vide cette liste après chaque
+  mise à jour réussie. Le connecteur ne la reconstituait que pour l'inventaire. Il la recalcule maintenant juste avant
+  chaque mise à jour (extensions et thèmes) : la même requête vers wordpress.org que WordPress fait deux fois par jour.
+- Un refus de WordPress est expliqué : « n'annonce plus de mise à jour pour cette extension (déjà à jour, ou version
+  retirée de wordpress.org) » au lieu de « sans détail ».
+
 ## [0.7.0] - 2026-10-10
 
 ### Ajouté
