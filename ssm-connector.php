@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.8.1
+ * Version: 0.9.0
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.8.1');
+define('SSM_CONNECTOR_VERSION', '0.9.0');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -96,6 +96,9 @@ class SSM_Connector {
         add_action(self::HEARTBEAT_HOOK, [$this, 'send_heartbeat']);
         add_action(self::POLL_HOOK, [$this, 'poll']);
         add_filter('cron_schedules', [$this, 'cron_schedules']);
+        // stockage fourni par SSM à d'autres extensions (WP Migration) : voir storage_sign()
+        add_filter('ssm_connector_storage_available', [$this, 'storage_available']);
+        add_filter('ssm_connector_storage_sign', [$this, 'storage_sign'], 10, 2);
         add_filter('plugin_action_links_' . plugin_basename(SSM_CONNECTOR_FILE), [$this, 'action_links']);
         register_activation_hook(SSM_CONNECTOR_FILE, [$this, 'activate']);
         register_deactivation_hook(SSM_CONNECTOR_FILE, [$this, 'deactivate']);
@@ -130,7 +133,8 @@ class SSM_Connector {
     /** Ce que ce connecteur sait exécuter : SSM n'envoie rien d'autre. */
     public function capabilities() {
         $caps = ['update_extension', 'update_theme', 'update_core', 'health_check', 'plugin_activate',
-                 'plugin_deactivate', 'plugin_install', 'plugin_install_package', 'plugin_delete', 'php_errors', 'poll'];
+                 'plugin_deactivate', 'plugin_install', 'plugin_install_package', 'plugin_delete', 'php_errors', 'poll',
+                 'storage_broker'];
         if (class_exists('ZipArchive') && function_exists('curl_init')) {
             $caps[] = 'backup_site';
         }
@@ -204,6 +208,66 @@ class SSM_Connector {
             return false;
         }
         return $this->send_heartbeat();
+    }
+
+    // === Stockage fourni par SSM (courtier d'URL pré-signées) ===
+
+    /**
+     * Filtre `ssm_connector_storage_available` : le connecteur est-il prêt à demander des signatures à SSM ?
+     * (adresse et jeton valides). Ne dit pas que SSM a un point de sauvegarde pour ce site : SSM le dira à la demande.
+     */
+    public function storage_available($default = false) {
+        $cfg = $this->config();
+        return $cfg['problem'] === '' && $cfg['url'] !== '' && $cfg['token'] !== '';
+    }
+
+    /**
+     * Filtre `ssm_connector_storage_sign` : demande à SSM de signer UNE requête S3 d'une autre extension (WP Migration).
+     * `$args` : ['method' => GET|PUT|HEAD|DELETE|POST, 'key' => clé relative au dossier du site, 'query' => [...], 'expires' => s].
+     * Retourne ['url', 'method', 'base', 'expires_in'] ou un WP_Error au message prêt à afficher (jamais l'URL signée).
+     * La clé du compartiment reste dans SSM : le site ne reçoit qu'une URL valable pour cette requête, dans son dossier.
+     * Ce filtre n'ouvre aucune route : il n'est appelable que par du code PHP du site, qui peut déjà lire le jeton.
+     */
+    public function storage_sign($default, $args = []) {
+        $cfg = $this->config();
+        if (!$this->storage_available()) {
+            return new WP_Error('ssm_connector', $cfg['problem'] !== '' ? $cfg['problem'] : "SSM Connector n'est pas configuré : saisissez l'adresse de SSM et le token du site.");
+        }
+        $args = is_array($args) ? $args : [];
+        $method = isset($args['method']) ? strtoupper((string) $args['method']) : '';
+        if (!in_array($method, ['GET', 'PUT', 'HEAD', 'DELETE', 'POST'], true)) {
+            return new WP_Error('ssm_connector', 'Méthode S3 non prise en charge.');
+        }
+        $query = [];
+        foreach ((isset($args['query']) && is_array($args['query']) ? $args['query'] : []) as $name => $value) {
+            $query[(string) $name] = (string) $value;
+        }
+        $body = ['method' => $method, 'key' => isset($args['key']) ? (string) $args['key'] : '', 'query' => (object) $query];
+        if (isset($args['expires'])) {
+            $body['expires'] = (int) $args['expires'];
+        }
+        $reply = $this->post_to_ssm($cfg['url'] . '/api/v1/connector/storage/sign', $cfg['token'], $body);
+        if (isset($reply['error'])) {
+            return new WP_Error('ssm_connector', $reply['error']);
+        }
+        $code = (int) $reply['status_code'];
+        $data = is_array($reply['body']) ? $reply['body'] : [];
+        if ($code === 200 && isset($data['url']) && is_string($data['url']) && preg_match('#^https?://#', $data['url'])) {
+            return [
+                'url' => $data['url'],
+                'method' => $method,
+                'base' => isset($data['base']) && is_string($data['base']) ? $data['base'] : '',
+                'expires_in' => isset($data['expires_in']) ? (int) $data['expires_in'] : 0,
+            ];
+        }
+        if ($code === 401 || $code === 403) {
+            return new WP_Error('ssm_connector', 'SSM a refusé le token de ce site : reconnectez le connecteur.');
+        }
+        if ($code === 404) {
+            return new WP_Error('ssm_connector', "Cette version de SSM ne fournit pas le stockage aux extensions : mettez SSM à jour.");
+        }
+        $detail = isset($data['detail']) && is_string($data['detail']) ? $this->cut($data['detail'], 200) : '';
+        return new WP_Error('ssm_connector', $detail !== '' ? 'SSM : ' . $detail : 'Réponse inattendue de SSM Core (HTTP ' . $code . ').');
     }
 
     public function schedule_poll() {
