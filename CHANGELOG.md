@@ -3,6 +3,13 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), versions sémantiques.
 
 ## [Unreleased]
+## [0.10.0] - 2026-10-13
+### Ajouté
+- **Explorateur de fichiers** (SSM Core 2.27.0) : `list_files`, `read_file`, `write_file`, `move_file`,
+  `delete_file`, avec `read_files` et `write_files` annoncées séparément. Le chemin est résolu et
+  vérifié sous `ABSPATH` — seul le connecteur peut juger des liens symboliques, SSM ne voit pas le
+  disque. Écriture atomique, mode préservé, `wp-config.php` et `.htaccess` jamais ouverts,
+  suppression récursive refusée.
 
 ## [0.9.0] - 2026-10-12
 
