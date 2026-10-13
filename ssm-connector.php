@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.9.0
+ * Version: 0.10.0
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.9.0');
+define('SSM_CONNECTOR_VERSION', '0.10.0');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -141,7 +141,313 @@ class SSM_Connector {
         if (self::login_allowed()) {
             $caps[] = 'login';
         }
+        // Explorateur de fichiers (SSM 2.27). Annoncees separement : lire un `debug.log` ne doit
+        // pas obliger a ouvrir le droit d'ecrire sur des fichiers de production.
+        if (is_dir(ABSPATH) && is_readable(ABSPATH)) {
+            $caps[] = 'read_files';
+        }
+        if (is_dir(ABSPATH) && is_writable(ABSPATH)) {
+            $caps[] = 'write_files';
+        }
         return $caps;
+    }
+
+    // === Explorateur de fichiers (SSM 2.27) ===
+// === Explorateur de fichiers (SSM 2.27) ===
+
+    /**
+     * Traduit un chemin SSM en chemin réel, ou lève une exception.
+     *
+     * SSM filtre déjà de son côté, mais il ne voit pas le disque : **seul le contrôle fait ici
+     * vaut**, parce que c'est le seul endroit où l'on peut résoudre un lien symbolique. Un
+     * `wp-content/uploads/lien` pointant vers `/etc` passerait tous les tests de SSM.
+     *
+     * On résout donc le chemin réel (`.` et `..` inclus) et on vérifie qu'il reste sous la racine
+     * du site. `ABSPATH` est la racine *réelle* : WordPress vit ailleurs que « la racine » de son
+     * arborescence de fichiers.
+     */
+    private function file_root() {
+        $root = @realpath(ABSPATH);
+        return $root === false ? rtrim(ABSPATH, '/\\') : $root;
+    }
+
+    private function resolve_site_path($raw) {
+        if (!is_string($raw) || $raw === '') {
+            throw new \RuntimeException('Chemin absent.');
+        }
+        if (strpos($raw, "\0") !== false || preg_match('/[\r\n\t]/', $raw)) {
+            throw new \RuntimeException('Chemin invalide.');
+        }
+        $rel = str_replace('\\', '/', trim($raw));
+        $rel = ltrim($rel, '/');
+        $segs = [];
+        foreach (explode('/', $rel) as $seg) {
+            if ($seg === '' || $seg === '.') {
+                continue;
+            }
+            if ($seg === '..') {
+                // Refuse franchement plutot que de normaliser. Un `../` qui deborde la racine
+                // exprime une demande de sortir du site : la reduire silencieusement a la racine
+                // eviterait un echec, mais elle validerait une requete qui n'a pas de sens.
+                if (!$segs) {
+                    throw new \RuntimeException("Chemin refuse : la remontee sort de la racine du site.");
+                }
+                array_pop($segs);
+                continue;
+            }
+            if (!preg_match('/^[A-Za-z0-9._\-]+$/', $seg)) {
+                throw new \RuntimeException('Segment de chemin refuse : ' . $this->cut($seg, 40));
+            }
+            $segs[] = $seg;
+        }
+        $root = $this->file_root();
+        if (!$segs) {
+            return $root;
+        }
+        $candidat = $root . '/' . implode('/', $segs);
+        // Si le chemin existe deja, on resout reellement (liens symboliques) ; sinon on resout le
+        // parent, pour qu'un fichier cree dans un dossier symlinke ne sorte pas non plus.
+        $reel = realpath($candidat);
+        if ($reel === false) {
+            $reel = realpath(dirname($candidat));
+        }
+        if ($reel !== false) {
+            $reel = rtrim($reel, '/\\');
+            if ($reel !== $root && strpos($reel, $root . DIRECTORY_SEPARATOR) !== 0) {
+                throw new \RuntimeException('Chemin refuse : il sort de la racine du site.');
+            }
+        }
+        return $candidat;
+    }
+
+    /** Un fichier d'identifiants n'est ni lu ni ecrit depuis SSM : les afficher les copierait dans
+     *  une page web, et les ecrire a l'aveugle casse le site. */
+    private function is_secret_file($abs) {
+        $base = basename($abs);
+        if (in_array($base, ['wp-config.php', '.htaccess', '.env', 'web.config', 'configuration.php'], true)) {
+            return true;
+        }
+        return strpos($abs, DIRECTORY_SEPARATOR . 'wp-content' . DIRECTORY_SEPARATOR . 'config.php') !== false;
+    }
+
+    private function human_size($bytes) {
+        $bytes = (int) $bytes;
+        if ($bytes < 1024) {
+            return $bytes . ' o';
+        }
+        if ($bytes < 1048576) {
+            return round($bytes / 1024, 1) . ' Ko';
+        }
+        return round($bytes / 1048576, 1) . ' Mo';
+    }
+
+    private function rel_to_root($abs) {
+        $rootn = str_replace('\\', '/', rtrim($this->file_root(), '/\\') . '/');
+        $absn = str_replace('\\', '/', $abs);
+        return strpos($absn, $rootn) === 0 ? '/' . ltrim(substr($absn, strlen($rootn)), '/') : $absn;
+    }
+
+    private function file_entry($abs) {
+        $est_dossier = is_dir($abs);
+        return [
+            'nom' => basename($abs),
+            'chemin' => $this->rel_to_root($abs),
+            'dossier' => $est_dossier,
+            'taille' => $est_dossier ? 0 : (int) @filesize($abs),
+            'taille_lisible' => $est_dossier ? '—' : $this->human_size(@filesize($abs)),
+            'modifie' => (int) @filemtime($abs),
+            'secret' => !$est_dossier && $this->is_secret_file($abs),
+        ];
+    }
+
+    private function signaler_erreur_fichier($id, $raison) {
+        $this->queue_command_result($id, 'failed', $raison);
+    }
+
+    // --- opérations ---
+
+    private function op_list_files($id, $params) {
+        try {
+            $dir = $this->resolve_site_path(isset($params['path']) ? $params['path'] : '/');
+        } catch (\RuntimeException $e) {
+            $this->signaler_erreur_fichier($id, $e->getMessage());
+            return;
+        }
+        if (!is_dir($dir)) {
+            $this->signaler_erreur_fichier($id, "Ce chemin n'est pas un dossier.");
+            return;
+        }
+        $entrees = [];
+        $handle = @opendir($dir);
+        if ($handle === false) {
+            $this->signaler_erreur_fichier($id, 'Dossier illisible.');
+            return;
+        }
+        while (($nom = readdir($handle)) !== false) {
+            if ($nom === '.' || $nom === '..') {
+                continue;
+            }
+            $entrees[] = $this->file_entry($dir . '/' . $nom);
+        }
+        closedir($handle);
+        usort($entrees, function ($a, $b) {
+            if ($a['dossier'] !== $b['dossier']) {
+                return $a['dossier'] ? -1 : 1;    // les dossiers d'abord : c'est ce qu'on cherche
+            }
+            return strcasecmp($a['nom'], $b['nom']);
+        });
+        $this->queue_command_result($id, 'success', null, [
+            'path' => $this->rel_to_root($dir),
+            'racine' => $this->rel_to_root($this->file_root()),
+            'entrees' => array_slice($entrees, 0, 500),
+            'tronque' => count($entrees) > 500,
+        ]);
+    }
+
+    private function op_read_file($id, $params) {
+        try {
+            $abs = $this->resolve_site_path(isset($params['path']) ? $params['path'] : '');
+        } catch (\RuntimeException $e) {
+            $this->signaler_erreur_fichier($id, $e->getMessage());
+            return;
+        }
+        if (!is_file($abs)) {
+            $this->signaler_erreur_fichier($id, 'Fichier introuvable.');
+            return;
+        }
+        if ($this->is_secret_file($abs)) {
+            $this->signaler_erreur_fichier($id, "Ce fichier contient des identifiants : son contenu n'est pas transmis.");
+            return;
+        }
+        $taille = (int) filesize($abs);
+        if ($taille > 524288) {     // 512 Ko : au-dela, l'ecran n'enregistre rien d'utile
+            $this->signaler_erreur_fichier($id, 'Fichier trop volumineux pour etre affiche ('
+                . $this->human_size($taille) . ').');
+            return;
+        }
+        $contenu = @file_get_contents($abs);
+        if ($contenu === false) {
+            $this->signaler_erreur_fichier($id, 'Lecture impossible.');
+            return;
+        }
+        $this->queue_command_result($id, 'success', null, [
+            'path' => $this->rel_to_root($abs),
+            'content' => $contenu,
+            'encoding' => 'utf-8',
+            'size_bytes' => $taille,
+            'modifie' => (int) filemtime($abs),
+        ]);
+    }
+
+    private function op_write_file($id, $params) {
+        try {
+            $abs = $this->resolve_site_path(isset($params['path']) ? $params['path'] : '');
+        } catch (\RuntimeException $e) {
+            $this->signaler_erreur_fichier($id, $e->getMessage());
+            return;
+        }
+        if ($this->is_secret_file($abs)) {
+            $this->signaler_erreur_fichier($id, 'Ce fichier contient des identifiants : SSM ne le modifie pas.');
+            return;
+        }
+        if (is_dir($abs)) {
+            $this->signaler_erreur_fichier($id, 'Ce chemin est un dossier.');
+            return;
+        }
+        $contenu = isset($params['content']) ? (string) $params['content'] : '';
+        if (strlen($contenu) > 2097152) {   // 2 Mo
+            $this->signaler_erreur_fichier($id, 'Contenu trop volumineux.');
+            return;
+        }
+        $dossier = dirname($abs);
+        if (!$this->disk_writable($dossier)) {
+            $this->signaler_erreur_fichier($id, 'Dossier non inscriptible.');
+            return;
+        }
+        // Ecriture atomique : un temporaire puis un renommage. Une ecriture interrompue ne doit
+        // jamais laisser un fichier tronque sur un site de production.
+        $tmp = $abs . '.ssmtmp' . wp_rand(1000, 9999);
+        if (@file_put_contents($tmp, $contenu, LOCK_EX) === false) {
+            $this->signaler_erreur_fichier($id, 'Ecriture impossible.');
+            return;
+        }
+        if (is_file($abs)) {
+            @chmod($tmp, @fileperms($abs) & 0777);   // un fichier php executable doit le rester
+        }
+        if (!@rename($tmp, $abs)) {
+            @unlink($tmp);
+            $this->signaler_erreur_fichier($id, 'Remplacement impossible.');
+            return;
+        }
+        clearstatcache(true, $abs);
+        $this->queue_command_result($id, 'success', null, [
+            'path' => $this->rel_to_root($abs),
+            'size_bytes' => (int) filesize($abs),
+            'modifie' => (int) filemtime($abs),
+        ]);
+    }
+
+    private function op_move_file($id, $params) {
+        try {
+            $abs = $this->resolve_site_path(isset($params['path']) ? $params['path'] : '');
+            $vers = $this->resolve_site_path(isset($params['to']) ? $params['to'] : '');
+        } catch (\RuntimeException $e) {
+            $this->signaler_erreur_fichier($id, $e->getMessage());
+            return;
+        }
+        if (!file_exists($abs)) {
+            $this->signaler_erreur_fichier($id, 'Source introuvable.');
+            return;
+        }
+        if (file_exists($vers)) {
+            $this->signaler_erreur_fichier($id, 'La destination existe deja.');
+            return;
+        }
+        if (!$this->disk_writable(dirname($vers))) {
+            $this->signaler_erreur_fichier($id, 'Dossier de destination non inscriptible.');
+            return;
+        }
+        // `rename` conserve le mode et le proprietaire ; un `copy` suivi d'un `unlink` les perdrait —
+        // et un script de site qui perd son bit executable ne se lance plus.
+        if (@rename($abs, $vers)) {
+            $this->queue_command_result($id, 'success', null, [
+                'path' => $this->rel_to_root($abs), 'to' => $this->rel_to_root($vers)]);
+            return;
+        }
+        $this->signaler_erreur_fichier($id, 'Deplacement impossible.');
+    }
+
+    private function op_delete_file($id, $params) {
+        try {
+            $abs = $this->resolve_site_path(isset($params['path']) ? $params['path'] : '');
+        } catch (\RuntimeException $e) {
+            $this->signaler_erreur_fichier($id, $e->getMessage());
+            return;
+        }
+        if (rtrim($abs, '/\\') === rtrim($this->file_root(), '/\\')) {
+            $this->signaler_erreur_fichier($id, 'La racine du site ne peut pas etre supprimee.');
+            return;
+        }
+        if (!file_exists($abs)) {
+            $this->signaler_erreur_fichier($id, 'Fichier introuvable.');
+            return;
+        }
+        if (is_dir($abs)) {
+            // Supprimer un dossier en profondeur sans confirmation prealable serait le pire service a
+            // rendre : on refuse plutot que d'effacer un `wp-content/themes` d'un geste.
+            $this->signaler_erreur_fichier($id,
+                "Ce chemin est un dossier : la suppression recursive n'est pas autorisee depuis SSM.");
+            return;
+        }
+        if (!$this->disk_writable(dirname($abs))) {
+            $this->signaler_erreur_fichier($id, 'Dossier non inscriptible.');
+            return;
+        }
+        if (@unlink($abs)) {
+            $this->queue_command_result($id, 'success', null, ['path' => $this->rel_to_root($abs)]);
+            return;
+        }
+        $this->signaler_erreur_fichier($id, 'Suppression impossible.');
     }
 
     // === Activation, migration, planification ===
@@ -1115,6 +1421,26 @@ class SSM_Connector {
         $params = isset($cmd['params']) && is_array($cmd['params']) ? $cmd['params'] : [];
         if ($kind === 'backup_site') {
             $this->backup_site($id, $params);
+            return;
+        }
+        $fichier_ops = [
+            'list_files' => 'op_list_files', 'read_file' => 'op_read_file',
+            'write_file' => 'op_write_file', 'move_file' => 'op_move_file',
+            'delete_file' => 'op_delete_file',
+        ];
+        if (isset($fichier_ops[$kind])) {
+            // Une ecriture est refusee si le connecteur n'annonce pas write_files : c'est une
+            // garde de plus, independante de celle de SSM.
+            if (in_array($kind, ['write_file', 'move_file', 'delete_file'], true)
+                && !in_array('write_files', $this->capabilities(), true)) {
+                $this->queue_command_result($id, 'failed', "Ce connecteur n'annonce pas write_files.");
+                return;
+            }
+            try {
+                $this->{$fichier_ops[$kind]}($id, $params);
+            } catch (\Throwable $e) {
+                $this->queue_command_result($id, 'failed', $e->getMessage());
+            }
             return;
         }
         $slug = isset($cmd['slug']) ? (string) $cmd['slug'] : '';
