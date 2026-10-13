@@ -3,6 +3,29 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), versions sémantiques.
 
 ## [Unreleased]
+## [0.11.0] - 2026-10-13
+### Ajouté
+- **Copier** un fichier ou un dossier, côté serveur : les octets ne repassent jamais par SSM, ce
+  qui est la seule façon de copier un fichier de 200 Mo sans le faire transiter par une API.
+- **Télécharger** un fichier vers le poste : le connecteur le dépose sur le point de sauvegarde,
+  et SSM n'en sert une URL signée qu'après avoir vérifié la taille et l'empreinte annoncées.
+- **Envoyer** un fichier vers le site ; une archive `.zip` est décompressée à l'arrivée.
+- **Décompresser** une archive déjà présente, en refusant d'écraser sans demande explicite.
+
+Chaque membre d'une archive est résolu avant extraction : un `../../wp-config.php` glissé dans
+un zip téléchargé sur internet est refusé — ce que `ZipArchive::extractTo()` ne fait pas, et ce
+qui donnerait sinon un serveur entier à qui fournit le zip.
+
+## [0.11.0] - 2026-10-13
+### Ajouté
+- **Copier** un fichier ou un dossier côté serveur (les octets ne repassent jamais par SSM).
+- **Télécharger** un fichier vers le poste : il est déposé sur le point de sauvegarde, et SSM n'en
+  sert qu'une URL signée, après avoir vérifié la taille et l'empreinte annoncées.
+- **Envoyer** un fichier vers le site ; une  est décompressée à l'arrivée.
+- **Décompresser** une archive déjà présente, en refusant d'écraser sans demande explicite.
+
+Chaque membre d'une archive est résolu avant extraction : un  glissé dans un
+zip téléchargé sur internet est refusé, ce que  ne fait pas.
 ## [0.10.0] - 2026-10-13
 ### Ajouté
 - **Explorateur de fichiers** (SSM Core 2.27.0) : `list_files`, `read_file`, `write_file`, `move_file`,
