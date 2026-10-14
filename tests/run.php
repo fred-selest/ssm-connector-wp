@@ -204,9 +204,13 @@ test("question « une action m'attend-elle ? » : envoi complet seulement si SSM
     check(in_array('poll', $ssm->capabilities(), true), 'capacité « poll » annoncée');
 });
 
-test("question toutes les deux minutes, planifiée et retirée avec l'extension, sans route publique", function () use ($ssm) {
+test("question fréquente, planifiée et retirée avec l'extension, sans route publique", function () use ($ssm) {
+    // 15 s et non 120 : WP-Cron n'exécute que l'échéance due, à la visite d'une page. Avec
+    // 120 s, une commande demandée depuis SSM attendait l'échéance suivante — jusqu'à plusieurs
+    // minutes, mesuré de 15 s à 519 s sur un site réel. Le coût reste nul quand rien n'est
+    // demandé : une question qui répond « non » ne déclenche aucun envoi.
     $schedules = $ssm->cron_schedules([]);
-    same($schedules['ssm_two_minutes']['interval'], 120, 'intervalle de deux minutes');
+    same($schedules['ssm_two_minutes']['interval'], 15, 'intervalle de 15 secondes');
     $ssm->on_loaded();
     check(!empty($GLOBALS['ssm_scheduled']['ssm_poll_event']), 'question planifiée');
     check(!empty($GLOBALS['ssm_hooks']['ssm_poll_event']), 'crochet branché');
