@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.11.0
+ * Version: 0.11.1
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.11.0');
+define('SSM_CONNECTOR_VERSION', '0.11.1');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -50,7 +50,13 @@ class SSM_Connector {
     const OPT_SITE_ID = 'ssm_site_id';                // identifiant du site chez SSM
     const POLL_HOOK = 'ssm_poll_event';               // question « une action m'attend-elle ? » à SSM
     const POLL_SCHEDULE = 'ssm_two_minutes';
-    const POLL_INTERVAL = 120;
+    // 15 s, et non 120 : WP-Cron n'execute que les echeances dues, quand une page le declenche.
+    // Avec 120 s, meme en reveillant le site, une commande attendait l'echeance suivante — d'ou les
+    // minutes d'attente mesurees en production. A 15 s, une commande demandee est traitee en
+    // quelques secondes. Le cout reste nul quand le site est inactif : sans reveil de SSM, ce
+    // planificateur n'a rien a executer, et une question « avez-vous quelque chose ? » qui repond
+    // non ne declenche aucun envoi complet.
+    const POLL_INTERVAL = 15;
     const OPT_LOGIN_LOG = 'ssm_login_log';            // dernières connexions directes
     const OPT_LOGIN_ALLOWED = 'ssm_login_allowed';    // case « Autoriser la connexion directe » (page de l'extension)
     const OPT_LOGIN_USER = 'ssm_login_user';          // administrateur connecté (ID), 0 : le premier administrateur
@@ -810,7 +816,7 @@ class SSM_Connector {
 
     /** WP-Cron : intervalle de deux minutes pour la question à SSM (WordPress n'en propose pas de si court). */
     public function cron_schedules($schedules) {
-        $schedules[self::POLL_SCHEDULE] = ['interval' => self::POLL_INTERVAL, 'display' => 'SSM : toutes les 2 minutes'];
+        $schedules[self::POLL_SCHEDULE] = ['interval' => self::POLL_INTERVAL, 'display' => 'SSM : toutes les 15 secondes'];
         return $schedules;
     }
 

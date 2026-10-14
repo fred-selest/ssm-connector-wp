@@ -3,6 +3,17 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), versions sémantiques.
 
 ## [Unreleased]
+## [0.11.1] - 2026-10-14
+### Corrige
+- **Une commande demandée pouvait attendre plusieurs minutes.** Le connecteur planifiait son
+  interrogation à SSM toutes les 120 s, et WP-Cron n'exécute que l'échéance due, à la visite d'une
+  page. Une seule visite, lancée à un moment quelconque, avait donc une chance sur huit de tomber
+  après l'échéance : le reste du temps, aucune commande n'était récupérée.
+  L'échéance passe à **15 s**. Aucun nouveau secret et aucune nouvelle route : `wp-cron.php` ne
+  demande aucune autorisation. Le coût reste nul quand rien n'est demandé — une interrogation qui
+  répond « non » ne déclenche aucun envoi.
+  Mesuré sur un site réel avant correction : de 15 s à 519 s.
+
 ## [0.11.0] - 2026-10-13
 ### Ajouté
 - **Copier** un fichier ou un dossier, côté serveur : les octets ne repassent jamais par SSM, ce
