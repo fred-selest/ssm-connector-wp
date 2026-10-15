@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.11.1
+ * Version: 0.12.0
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.11.1');
+define('SSM_CONNECTOR_VERSION', '0.12.0');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -57,6 +57,12 @@ class SSM_Connector {
     // planificateur n'a rien a executer, et une question « avez-vous quelque chose ? » qui repond
     // non ne declenche aucun envoi complet.
     const POLL_INTERVAL = 15;
+    // Session d'ecoute de l'explorateur (canal rapide, SSM 2.33) : une requete longue sur SSM,
+    // qui repond des qu'une commande de fichiers arrive. Bornee : elle occupe un processus PHP.
+    const FAST_LOCK = 'ssm_fast_session';
+    const FAST_SECONDS = 40;      // duree maximale d'une session (surchargeable : SSM_CONNECTOR_SESSION_SECONDS)
+    const LIST_MAX = 1000;        // entrees rendues par page (500, sans pagination, avant 0.12.0)
+    const FAST_WAIT = 15;         // secondes d'attente par requete longue
     const OPT_LOGIN_LOG = 'ssm_login_log';            // dernières connexions directes
     const OPT_LOGIN_ALLOWED = 'ssm_login_allowed';    // case « Autoriser la connexion directe » (page de l'extension)
     const OPT_LOGIN_USER = 'ssm_login_user';          // administrateur connecté (ID), 0 : le premier administrateur
@@ -151,6 +157,8 @@ class SSM_Connector {
         // pas obliger a ouvrir le droit d'ecrire sur des fichiers de production.
         if (is_dir(ABSPATH) && is_readable(ABSPATH)) {
             $caps[] = 'read_files';
+            // Canal rapide : commandes de fichiers recues et resultats rendus sans inventaire.
+            $caps[] = 'fast_files';
         }
         if (is_dir(ABSPATH) && is_writable(ABSPATH)) {
             $caps[] = 'write_files';
@@ -291,6 +299,8 @@ class SSM_Connector {
             $this->signaler_erreur_fichier($id, "Ce chemin n'est pas un dossier.");
             return;
         }
+        $dirs_only = !empty($params['dirs_only']);
+        $offset = isset($params['offset']) ? max(0, (int) $params['offset']) : 0;
         $entrees = [];
         $handle = @opendir($dir);
         if ($handle === false) {
@@ -301,7 +311,13 @@ class SSM_Connector {
             if ($nom === '.' || $nom === '..') {
                 continue;
             }
-            $entrees[] = $this->file_entry($dir . '/' . $nom);
+            $abs = $dir . '/' . $nom;
+            // Arborescence : seuls les sous-dossiers comptent. Evite de statuer des milliers de
+            // fichiers d'`uploads/` pour n'en afficher aucun.
+            if ($dirs_only && !is_dir($abs)) {
+                continue;
+            }
+            $entrees[] = $this->file_entry($abs);
         }
         closedir($handle);
         usort($entrees, function ($a, $b) {
@@ -313,8 +329,10 @@ class SSM_Connector {
         $this->queue_command_result($id, 'success', null, [
             'path' => $this->rel_to_root($dir),
             'racine' => $this->rel_to_root($this->file_root()),
-            'entrees' => array_slice($entrees, 0, 500),
-            'tronque' => count($entrees) > 500,
+            'entrees' => array_slice($entrees, $offset, self::LIST_MAX),
+            'tronque' => count($entrees) > $offset + self::LIST_MAX,
+            'total' => count($entrees),
+            'offset' => $offset,
         ]);
     }
 
@@ -398,6 +416,44 @@ class SSM_Connector {
             'path' => $this->rel_to_root($abs),
             'size_bytes' => (int) filesize($abs),
             'modifie' => (int) filemtime($abs),
+        ]);
+    }
+
+    private function op_make_dir($id, $params) {
+        try {
+            $abs = $this->resolve_site_path(isset($params['path']) ? $params['path'] : '');
+        } catch (\RuntimeException $e) {
+            $this->signaler_erreur_fichier($id, $e->getMessage());
+            return;
+        }
+        if ($abs === $this->file_root()) {
+            $this->signaler_erreur_fichier($id, 'La racine du site existe deja.');
+            return;
+        }
+        if (file_exists($abs)) {
+            // Refus net : ni fusion ni ecrasement. Creer « uploads » alors qu'il existe est une
+            // erreur de saisie, pas une demande.
+            $this->signaler_erreur_fichier($id, 'Ce nom existe deja.');
+            return;
+        }
+        $parent = dirname($abs);
+        if (!is_dir($parent)) {
+            $this->signaler_erreur_fichier($id, "Le dossier parent n'existe pas.");
+            return;
+        }
+        if (!$this->disk_writable($parent)) {
+            $this->signaler_erreur_fichier($id, 'Dossier non inscriptible.');
+            return;
+        }
+        // 0755 sans recursion : on cree le dossier demande, pas une chaine de dossiers.
+        if (!@mkdir($abs, 0755)) {
+            $this->signaler_erreur_fichier($id, 'Creation impossible.');
+            return;
+        }
+        clearstatcache(true, $abs);
+        $this->queue_command_result($id, 'success', null, [
+            'path' => $this->rel_to_root($abs),
+            'modifie' => (int) @filemtime($abs),
         ]);
     }
 
@@ -840,10 +896,104 @@ class SSM_Connector {
             return false;   // SSM injoignable ou plus ancien (route absente) : l'envoi horaire reste là
         }
         $body = json_decode((string) wp_remote_retrieve_body($response), true);
-        if (!is_array($body) || empty($body['pending'])) {
+        if (!is_array($body)) {
             return false;
         }
-        return $this->send_heartbeat();
+        // Deux voies depuis le canal rapide : `fast` (commandes de fichiers, session d'ecoute sans
+        // inventaire) et `pending` (mises a jour, actions : le heartbeat, comme avant). Un SSM
+        // plus ancien ne repond que `pending`, pour tout.
+        $ok = false;
+        if (!empty($body['fast']) && in_array('fast_files', $this->capabilities(), true)) {
+            $ok = $this->fast_session() || $ok;
+        }
+        if (!empty($body['pending'])) {
+            $ok = $this->send_heartbeat() || $ok;
+        }
+        return $ok;
+    }
+
+    /**
+     * Session d'ecoute de l'explorateur : tant qu'on navigue, une requete longue sur SSM
+     * (`GET /connector/commands?wait=`) rend la main des qu'une commande de fichiers arrive ; on
+     * l'execute et on renvoie son resultat tout de suite (`POST /connector/results`), sans inventaire.
+     *
+     * Bornee, parce qu'elle occupe un processus PHP : duree maximale (FAST_SECONDS), un seul
+     * exemplaire a la fois (verrou), arret apres deux attentes sans commande. Elle ne demarre que
+     * si SSM l'a demandee (`fast` dans la reponse de `pending`) : un site non consulte n'ouvre rien.
+     *
+     * @return bool true si au moins une commande a ete traitee.
+     */
+    public function fast_session() {
+        $cfg = $this->config();
+        if ($cfg['problem'] !== '' || $cfg['url'] === '' || $cfg['token'] === '') {
+            return false;
+        }
+        if (get_transient(self::FAST_LOCK)) {
+            return false;       // une session tourne deja
+        }
+        $max = defined('SSM_CONNECTOR_SESSION_SECONDS') ? max(5, min(120, (int) SSM_CONNECTOR_SESSION_SECONDS)) : self::FAST_SECONDS;
+        set_transient(self::FAST_LOCK, time(), $max + 30);
+        // WP-Cron a pose son propre verrou pour 60 s : le garder ferait attendre les autres taches
+        // planifiees du site pendant toute la session.
+        delete_transient('doing_cron');
+        if (function_exists('ignore_user_abort')) {
+            @ignore_user_abort(true);
+        }
+        if (function_exists('set_time_limit')) {
+            @set_time_limit($max + 30);
+        }
+        $fin = time() + $max;
+        $vides = 0;
+        $traitees = 0;
+        try {
+            while (($reste = $fin - time()) >= 2) {
+                $attente = min(self::FAST_WAIT, $reste - 1);
+                $reponse = wp_remote_get($cfg['url'] . '/api/v1/connector/commands?wait=' . (int) $attente, [
+                    'headers' => ['X-SSM-Token' => $cfg['token'], 'Accept' => 'application/json'],
+                    'timeout' => $attente + 8,
+                    'redirection' => 0,
+                    'user-agent' => 'SSM-Connector/' . SSM_CONNECTOR_VERSION,
+                ]);
+                if (is_wp_error($reponse) || (int) wp_remote_retrieve_response_code($reponse) !== 200) {
+                    break;      // SSM injoignable, ou canal ferme (409) : le heartbeat reste la
+                }
+                $body = json_decode((string) wp_remote_retrieve_body($reponse), true);
+                $commandes = is_array($body) && is_array($body['commands'] ?? null) ? $body['commands'] : [];
+                if (!$commandes) {
+                    if (++$vides >= 2) {
+                        break;  // personne ne navigue plus : on rend le processus
+                    }
+                    continue;
+                }
+                $vides = 0;
+                $this->apply_commands($commandes);
+                $traitees += count($commandes);
+                if (!$this->flush_command_results($cfg)) {
+                    break;
+                }
+            }
+        } finally {
+            // Resultats restes en file (erreur reseau en cours de route) : ils partent au heartbeat.
+            delete_transient(self::FAST_LOCK);
+        }
+        return $traitees > 0;
+    }
+
+    /** Renvoie a SSM les comptes rendus en file, sans inventaire. En cas d'echec ils sont remis en file. */
+    private function flush_command_results($cfg) {
+        $resultats = $this->take_command_results();
+        if (!$resultats) {
+            return true;
+        }
+        $reply = $this->post_to_ssm($cfg['url'] . '/api/v1/connector/results', $cfg['token'],
+            ['command_results' => $resultats]);
+        $code = isset($reply['status_code']) ? (int) $reply['status_code'] : 0;
+        if (isset($reply['error']) || $code < 200 || $code >= 300) {
+            $restant = get_option(self::OPT_CMD_RESULTS, []);
+            update_option(self::OPT_CMD_RESULTS, array_slice(array_merge($resultats, is_array($restant) ? $restant : []), -200));
+            return false;
+        }
+        return true;
     }
 
     // === Stockage fourni par SSM (courtier d'URL pré-signées) ===
@@ -1756,14 +1906,14 @@ class SSM_Connector {
         $fichier_ops = [
             'list_files' => 'op_list_files', 'read_file' => 'op_read_file',
             'write_file' => 'op_write_file', 'move_file' => 'op_move_file',
-            'delete_file' => 'op_delete_file', 'copy_file' => 'op_copy_file',
+            'delete_file' => 'op_delete_file', 'make_dir' => 'op_make_dir', 'copy_file' => 'op_copy_file',
             'download_file' => 'op_download_file', 'install_file' => 'op_install_file',
             'extract_archive' => 'op_extract_archive',
         ];
         if (isset($fichier_ops[$kind])) {
             // Une ecriture est refusee si le connecteur n'annonce pas write_files : c'est une
             // garde de plus, independante de celle de SSM.
-            if (in_array($kind, ['write_file', 'move_file', 'delete_file', 'copy_file',
+            if (in_array($kind, ['write_file', 'move_file', 'delete_file', 'make_dir', 'copy_file',
                                  'install_file', 'extract_archive'], true)
                 && !in_array('write_files', $this->capabilities(), true)) {
                 $this->queue_command_result($id, 'failed', "Ce connecteur n'annonce pas write_files.");

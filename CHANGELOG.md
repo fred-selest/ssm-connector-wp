@@ -3,6 +3,19 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), versions sémantiques.
 
 ## [Unreleased]
+## [0.12.0] - 2026-10-15
+### Ajoute
+- **Canal rapide pour l'explorateur de fichiers** (capacité `fast_files`). Quand SSM indique qu'un
+  explorateur est ouvert, le connecteur ouvre une session bornée (40 s, un seul exemplaire à la fois,
+  arrêt après deux attentes vides) : il attend les commandes par longue attente et renvoie le résultat
+  directement, sans inventaire complet. Un SSM ancien ou un canal fermé (409) laisse le heartbeat
+  habituel en place.
+- Commande `make_dir` : création d'un dossier (le parent doit exister, pas d'écrasement, pas de sortie
+  de la racine).
+- `list_files` : `dirs_only`, `offset`, `total` et `tronque` (pages de 1000 entrées maximum).
+### Modifie
+- Les résultats dont l'envoi échoue sont remis en file pour le heartbeat suivant.
+
 ## [0.11.1] - 2026-10-14
 ### Corrige
 - **Une commande demandée pouvait attendre plusieurs minutes.** Le connecteur planifiait son
