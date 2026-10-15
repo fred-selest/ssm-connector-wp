@@ -4,7 +4,7 @@ Tags: monitoring, maintenance, inventory
 Requires at least: 5.5
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.12.0
+Stable tag: 0.12.1
 License: Private
 
 Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande. N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez.
@@ -48,6 +48,9 @@ En ligne de commande : `echo "$TOKEN" | wp ssm connect https://ssm.exemple.fr`.
 6. Configuration fixée dans wp-config.php : champs verrouillés, token hors base de données.
 
 == Changelog ==
+
+= 0.12.1 =
+* Explorateur : un dossier vide peut être supprimé depuis SSM (un dossier non vide reste refusé).
 
 = 0.12.0 =
 * Explorateur de fichiers rapide : canal « fast_files » (session courte à longue attente, résultats renvoyés sans inventaire), création de dossier, listage des dossiers seuls et par pages (SSM 2.33 minimum). Sans SSM récent, le comportement reste inchangé.

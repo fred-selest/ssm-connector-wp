@@ -3,6 +3,10 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), versions sémantiques.
 
 ## [Unreleased]
+## [0.12.1] - 2026-10-15
+### Modifie
+- Explorateur : `delete_file` supprime désormais un **dossier vide**. Un dossier qui contient quelque chose reste refusé (pas de suppression récursive), la racine du site aussi.
+
 ## [0.12.0] - 2026-10-15
 ### Ajoute
 - **Canal rapide pour l'explorateur de fichiers** (capacité `fast_files`). Quand SSM indique qu'un
