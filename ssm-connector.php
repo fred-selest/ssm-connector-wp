@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.12.0
+ * Version: 0.12.1
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.12.0');
+define('SSM_CONNECTOR_VERSION', '0.12.1');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -502,11 +502,24 @@ class SSM_Connector {
             $this->signaler_erreur_fichier($id, 'Fichier introuvable.');
             return;
         }
-        if (is_dir($abs)) {
-            // Supprimer un dossier en profondeur sans confirmation prealable serait le pire service a
-            // rendre : on refuse plutot que d'effacer un `wp-content/themes` d'un geste.
-            $this->signaler_erreur_fichier($id,
-                "Ce chemin est un dossier : la suppression recursive n'est pas autorisee depuis SSM.");
+        if (is_dir($abs) && !is_link($abs)) {
+            // Seul un dossier VIDE se supprime : effacer un `wp-content/themes` d'un geste serait le
+            // pire service a rendre. La suppression recursive reste refusee.
+            $contenu = @scandir($abs);
+            if ($contenu === false || count(array_diff($contenu, ['.', '..'])) > 0) {
+                $this->signaler_erreur_fichier($id,
+                    "Ce dossier n'est pas vide : la suppression recursive n'est pas autorisee depuis SSM.");
+                return;
+            }
+            if (!$this->disk_writable(dirname($abs))) {
+                $this->signaler_erreur_fichier($id, 'Dossier non inscriptible.');
+                return;
+            }
+            if (@rmdir($abs)) {
+                $this->queue_command_result($id, 'success', null, ['path' => $this->rel_to_root($abs)]);
+            } else {
+                $this->signaler_erreur_fichier($id, 'Suppression impossible.');
+            }
             return;
         }
         if (!$this->disk_writable(dirname($abs))) {

@@ -1527,6 +1527,20 @@ test("poll : la voie rapide ne déclenche pas d'inventaire, les mises à jour ou
     check(in_array('https://ssm.exemple.fr/api/v1/heartbeat', $posts, true), 'pending : inventaire envoyé');
 });
 
+test("explorateur : seul un dossier vide se supprime", function () use ($ssm) {
+    @mkdir(ABSPATH . 'sup/vide', 0755, true);
+    @mkdir(ABSPATH . 'sup/plein', 0755, true);
+    file_put_contents(ABSPATH . 'sup/plein/a.txt', 'x');
+    $ssm->apply_commands([ssm_file_cmd(51, 'delete_file', ['path' => '/sup/vide'])]);
+    same($ssm->take_command_results()[0]['status'], 'success', 'dossier vide supprimé');
+    check(!is_dir(ABSPATH . 'sup/vide'), 'le dossier a disparu');
+    $ssm->apply_commands([ssm_file_cmd(52, 'delete_file', ['path' => '/sup/plein'])]);
+    same($ssm->take_command_results()[0]['status'], 'failed', 'dossier non vide refusé');
+    check(is_file(ABSPATH . 'sup/plein/a.txt'), 'son contenu est intact');
+    $ssm->apply_commands([ssm_file_cmd(53, 'delete_file', ['path' => '/'])]);
+    same($ssm->take_command_results()[0]['status'], 'failed', 'la racine ne se supprime pas');
+});
+
 // En dernier : une constante PHP ne se retire plus une fois définie.
 test("connexion directe : la constante de wp-config.php l'emporte sur la case", function () use ($ssm) {
     ssm_reset();
