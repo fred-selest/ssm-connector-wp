@@ -1415,6 +1415,118 @@ test("une nouvelle version de l'extension est annoncée à SSM sans attendre l'e
     same(count($GLOBALS['ssm_single_events']), 1, 'une seule fois par version');
 });
 
+function ssm_file_cmd($id, $kind, $params) {
+    return ['id' => $id, 'ref' => 'command', 'kind' => $kind, 'params' => $params];
+}
+
+test("explorateur : « fast_files » annoncée avec la lecture des fichiers", function () use ($ssm) {
+    check(in_array('fast_files', $ssm->capabilities(), true), 'capacité « fast_files » annoncée');
+});
+
+test("explorateur : créer un dossier, sans écraser ni sortir de la racine", function () use ($ssm) {
+    @mkdir(ABSPATH . 'wp-content', 0755, true);
+    $ssm->apply_commands([ssm_file_cmd(11, 'make_dir', ['path' => '/wp-content/nouveau'])]);
+    $r = $ssm->take_command_results();
+    same($r[0]['status'], 'success', 'dossier créé');
+    check(is_dir(ABSPATH . 'wp-content/nouveau'), 'le dossier existe sur le disque');
+    $ssm->apply_commands([ssm_file_cmd(12, 'make_dir', ['path' => '/wp-content/nouveau'])]);
+    $r = $ssm->take_command_results();
+    same($r[0]['status'], 'failed', 'un nom déjà pris est refusé');
+    $ssm->apply_commands([ssm_file_cmd(13, 'make_dir', ['path' => '../dehors'])]);
+    $r = $ssm->take_command_results();
+    same($r[0]['status'], 'failed', 'la remontée hors de la racine est refusée');
+    $ssm->apply_commands([ssm_file_cmd(14, 'make_dir', ['path' => '/absent/enfant'])]);
+    $r = $ssm->take_command_results();
+    same($r[0]['status'], 'failed', 'pas de création en chaîne : le parent doit exister');
+    @rmdir(ABSPATH . 'wp-content/nouveau');
+});
+
+test("explorateur : dossiers seuls et pagination d'un gros dossier", function () use ($ssm) {
+    $d = ABSPATH . 'gros';
+    @mkdir($d . '/sous-a', 0755, true);
+    @mkdir($d . '/sous-b', 0755, true);
+    for ($i = 0; $i < 5; $i++) {
+        file_put_contents($d . "/f$i.txt", 'x');
+    }
+    $ssm->apply_commands([ssm_file_cmd(21, 'list_files', ['path' => '/gros', 'dirs_only' => true])]);
+    $data = $ssm->take_command_results()[0]['data'];
+    same(array_column($data['entrees'], 'nom'), ['sous-a', 'sous-b'], 'seuls les sous-dossiers');
+    $ssm->apply_commands([ssm_file_cmd(22, 'list_files', ['path' => '/gros'])]);
+    $data = $ssm->take_command_results()[0]['data'];
+    same($data['total'], 7, 'total annoncé');
+    same($data['offset'], 0, 'page de départ');
+    $ssm->apply_commands([ssm_file_cmd(23, 'list_files', ['path' => '/gros', 'offset' => 5])]);
+    $data = $ssm->take_command_results()[0]['data'];
+    same(count($data['entrees']), 2, 'page à partir du décalage');
+    same($data['tronque'], false, 'dernière page');
+});
+
+test("canal rapide : la session exécute, renvoie le résultat sans inventaire, puis rend la main", function () use ($ssm) {
+    configure();
+    @mkdir(ABSPATH . 'sess', 0755, true);
+    $reponses = [
+        json_encode(['commands' => [ssm_file_cmd(31, 'list_files', ['path' => '/sess'])]]),
+        json_encode(['commands' => []]),
+        json_encode(['commands' => []]),
+    ];
+    $GLOBALS['ssm_get'] = function ($url, $args) use (&$reponses) {
+        return ['code' => 200, 'body' => array_shift($reponses) ?? '{"commands": []}'];
+    };
+    $GLOBALS['ssm_http'] = function ($url, $args) { return ['code' => 200, 'body' => '{"processed": 1}']; };
+    same($ssm->fast_session(), true, 'une commande traitée');
+    $urls = array_map(function ($c) { return $c['url']; }, $GLOBALS['ssm_get_calls']);
+    check(count($urls) === 3 && strpos($urls[0], '/api/v1/connector/commands?wait=') !== false, 'trois attentes : une commande, deux vides');
+    $posts = $GLOBALS['ssm_http_calls'];
+    same(count($posts), 1, 'un seul envoi');
+    same($posts[0]['url'], 'https://ssm.exemple.fr/api/v1/connector/results', 'vers /connector/results, pas /heartbeat');
+    $corps = json_decode($posts[0]['args']['body'], true);
+    same(array_keys($corps), ['command_results'], 'aucun inventaire dans l\'envoi');
+    same($corps['command_results'][0]['command_id'], 31, 'résultat de la commande');
+    same(get_transient(SSM_Connector::FAST_LOCK), false, 'verrou rendu en fin de session');
+});
+
+test("canal rapide : un seul exemplaire à la fois, et résultats remis en file si l'envoi échoue", function () use ($ssm) {
+    configure();
+    set_transient(SSM_Connector::FAST_LOCK, time(), 60);
+    $GLOBALS['ssm_get'] = function () { throw new RuntimeException('ne doit pas être appelé'); };
+    same($ssm->fast_session(), false, 'session déjà ouverte : rien');
+    delete_transient(SSM_Connector::FAST_LOCK);
+
+    @mkdir(ABSPATH . 'sess2', 0755, true);
+    $GLOBALS['ssm_get'] = function () {
+        return ['code' => 200, 'body' => json_encode(['commands' => [ssm_file_cmd(41, 'list_files', ['path' => '/sess2'])]])];
+    };
+    $GLOBALS['ssm_http'] = function () { return ['code' => 500, 'body' => '{}']; };
+    $ssm->fast_session();
+    $restant = $ssm->take_command_results();
+    same($restant[0]['command_id'] ?? null, 41, 'résultat conservé pour le heartbeat suivant');
+});
+
+test("canal rapide : SSM ancien ou canal fermé (409) : pas de session, le heartbeat reste", function () use ($ssm) {
+    configure();
+    $GLOBALS['ssm_get'] = function () { return ['code' => 409, 'body' => '{"detail": "x"}']; };
+    same($ssm->fast_session(), false, 'canal fermé : rien');
+    same(get_transient(SSM_Connector::FAST_LOCK), false, 'verrou rendu');
+});
+
+test("poll : la voie rapide ne déclenche pas d'inventaire, les mises à jour oui", function () use ($ssm) {
+    configure();
+    $posts = [];
+    $GLOBALS['ssm_http'] = function ($url, $args) use (&$posts) { $posts[] = $url; return ['code' => 200, 'body' => '{"site_id": 4, "commands": []}']; };
+    $etape = 0;
+    $GLOBALS['ssm_get'] = function ($url, $args) use (&$etape) {
+        if (strpos($url, '/connector/pending') !== false) {
+            return ['code' => 200, 'body' => $etape === 0 ? '{"pending": false, "fast": true}' : '{"pending": true, "fast": false}'];
+        }
+        return ['code' => 200, 'body' => '{"commands": []}'];
+    };
+    $ssm->poll();
+    check(!in_array('https://ssm.exemple.fr/api/v1/heartbeat', $posts, true), 'fast seul : aucun inventaire');
+    $etape = 1;
+    $ssm->poll();
+    check(in_array('https://ssm.exemple.fr/api/v1/heartbeat', $posts, true), 'pending : inventaire envoyé');
+});
+
 // En dernier : une constante PHP ne se retire plus une fois définie.
 test("connexion directe : la constante de wp-config.php l'emporte sur la case", function () use ($ssm) {
     ssm_reset();
