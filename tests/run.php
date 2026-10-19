@@ -1485,6 +1485,17 @@ test("canal rapide : la session exécute, renvoie le résultat sans inventaire, 
     same(get_transient(SSM_Connector::FAST_LOCK), false, 'verrou rendu en fin de session');
 });
 
+test("canal rapide : le verrou est court, pour qu'un processus tué ne bloque pas la suite", function () use ($ssm) {
+    configure();
+    $ttl = null;
+    $GLOBALS['ssm_get'] = function () use (&$ttl) {
+        $ttl = $GLOBALS['ssm_transient_ttl'][SSM_Connector::FAST_LOCK] ?? null;
+        return ['response' => ['code' => 409], 'body' => ''];
+    };
+    $ssm->fast_session();
+    same($ttl !== null && $ttl <= 40, true, 'verrou de 40 s au plus');
+});
+
 test("canal rapide : un seul exemplaire à la fois, et résultats remis en file si l'envoi échoue", function () use ($ssm) {
     configure();
     set_transient(SSM_Connector::FAST_LOCK, time(), 60);
