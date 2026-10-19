@@ -3,6 +3,10 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), versions sémantiques.
 
 ## [Unreleased]
+## [0.12.2] - 2026-10-19
+### Corrige
+- Canal rapide : le verrou de session durait `durée + 30 s`. Quand l'hébergeur tuait le processus avant la fin (limite de temps, délai du serveur web), il restait posé plus d'une minute et aucune nouvelle session ne démarrait : l'onglet Fichiers attendait alors le passage lent du connecteur. Le verrou est désormais court et renouvelé à chaque tour.
+
 ## [0.12.1] - 2026-10-15
 ### Modifie
 - Explorateur : `delete_file` supprime désormais un **dossier vide**. Un dossier qui contient quelque chose reste refusé (pas de suppression récursive), la racine du site aussi.

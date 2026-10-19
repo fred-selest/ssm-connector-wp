@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.12.1
+ * Version: 0.12.2
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.12.1');
+define('SSM_CONNECTOR_VERSION', '0.12.2');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -945,7 +945,11 @@ class SSM_Connector {
             return false;       // une session tourne deja
         }
         $max = defined('SSM_CONNECTOR_SESSION_SECONDS') ? max(5, min(120, (int) SSM_CONNECTOR_SESSION_SECONDS)) : self::FAST_SECONDS;
-        set_transient(self::FAST_LOCK, time(), $max + 30);
+        // Verrou a duree courte, renouvele a chaque tour : un hebergeur qui tue le processus avant la
+        // fin (limite de temps, delai du serveur web) n'executerait pas le `finally`, et un verrou
+        // de `$max + 30` s bloquait alors toute nouvelle session pendant plus d'une minute.
+        $bail = self::FAST_WAIT + 10;
+        set_transient(self::FAST_LOCK, time(), $bail);
         // WP-Cron a pose son propre verrou pour 60 s : le garder ferait attendre les autres taches
         // planifiees du site pendant toute la session.
         delete_transient('doing_cron');
@@ -961,6 +965,7 @@ class SSM_Connector {
         try {
             while (($reste = $fin - time()) >= 2) {
                 $attente = min(self::FAST_WAIT, $reste - 1);
+                set_transient(self::FAST_LOCK, time(), $bail + 10);
                 $reponse = wp_remote_get($cfg['url'] . '/api/v1/connector/commands?wait=' . (int) $attente, [
                     'headers' => ['X-SSM-Token' => $cfg['token'], 'Accept' => 'application/json'],
                     'timeout' => $attente + 8,
