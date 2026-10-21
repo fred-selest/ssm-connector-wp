@@ -173,7 +173,7 @@ test("données minimales : rien que SSM Core lit, aucune donnée personnelle", f
     $keys = array_keys($ssm->collect_inventory());
     sort($keys);
     $expected = ['capabilities', 'cms', 'cms_version', 'command_results', 'connector_version', 'db_version', 'extensions',
-                 'hostname', 'login_enabled', 'php_errors', 'php_version', 'results', 'shop_url', 'site_path', 'themes', 'web_server'];
+                 'hostname', 'login_enabled', 'php_errors', 'php_version', 'results', 'shop_url', 'site_path', 'themes', 'web_server', 'wp_cron_disabled'];
     same($keys, $expected, 'clés envoyées');
     same($ssm->collect_inventory()['shop_url'], 'https://exemple.test/', 'adresse du site (SSM propose de suivre un passage en ligne)');
     $json = json_encode($ssm->collect_inventory());
@@ -1001,6 +1001,7 @@ test("contrat 3 : capacités annoncées, sans « login » tant que la constante 
     }
     check(!in_array('login', $inv['capabilities'], true), 'connexion directe absente par défaut');
     same($inv['login_enabled'], false, 'login_enabled faux');
+    same($inv['wp_cron_disabled'], false, 'WP-Cron actif par défaut');
     check(!array_key_exists('cms_latest_version', $inv), "pas de version du cœur tant que WordPress n'a pas vérifié");
     set_site_transient('update_core', (object) ['updates' => [(object) ['response' => 'upgrade', 'current' => '6.7']]]);
     same($ssm->collect_inventory()['cms_latest_version'], '6.7', 'version du cœur proposée');
