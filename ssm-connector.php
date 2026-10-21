@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.12.2
+ * Version: 0.13.0
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.12.2');
+define('SSM_CONNECTOR_VERSION', '0.13.0');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -1464,6 +1464,8 @@ class SSM_Connector {
             'command_results' => $this->take_command_results(),
             'php_errors' => $this->take_php_errors(),
             'login_enabled' => self::login_allowed(),
+            // DISABLE_WP_CRON posé : visiter wp-cron.php ne réveille pas le connecteur (SSM cesse alors de le tenter)
+            'wp_cron_disabled' => defined('DISABLE_WP_CRON') && (bool) constant('DISABLE_WP_CRON'),
         ];
         $core = $this->core_latest();
         if ($core['known']) {

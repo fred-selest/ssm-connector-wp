@@ -3,6 +3,10 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), versions sémantiques.
 
 ## [Unreleased]
+## [0.13.0] - 2026-10-21
+### Ajoute
+- Le connecteur annonce à SSM si `DISABLE_WP_CRON` est posé (`wp_cron_disabled`). SSM sait alors qu'il ne peut pas réveiller le site, cesse de visiter `wp-cron.php` pour rien et le signale dans l'audit du site (lenteur de l'onglet Fichiers).
+
 ## [0.12.2] - 2026-10-19
 ### Corrige
 - Canal rapide : le verrou de session durait `durée + 30 s`. Quand l'hébergeur tuait le processus avant la fin (limite de temps, délai du serveur web), il restait posé plus d'une minute et aucune nouvelle session ne démarrait : l'onglet Fichiers attendait alors le passage lent du connecteur. Le verrou est désormais court et renouvelé à chaque tour.

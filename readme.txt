@@ -4,7 +4,7 @@ Tags: monitoring, maintenance, inventory
 Requires at least: 5.5
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.12.2
+Stable tag: 0.13.0
 License: Private
 
 Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande. N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez.
@@ -48,6 +48,9 @@ En ligne de commande : `echo "$TOKEN" | wp ssm connect https://ssm.exemple.fr`.
 6. Configuration fixée dans wp-config.php : champs verrouillés, token hors base de données.
 
 == Changelog ==
+
+= 0.13.0 =
+* Annonce à SSM si WP-Cron est désactivé sur le site, pour expliquer les actions qui attendent le cron du serveur.
 
 = 0.12.2 =
 * Canal rapide : le verrou de session est court et renouvelé, pour qu'un processus tué par l'hébergeur ne bloque plus les sessions suivantes.
