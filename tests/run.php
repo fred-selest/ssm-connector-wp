@@ -1564,5 +1564,35 @@ test("connexion directe : la constante de wp-config.php l'emporte sur la case", 
     check(strpos($html, 'name="ssm_login_allowed" value="1" disabled') !== false && strpos($html, 'Fermée et verrouillée') !== false, 'case grisée, verrou affiché');
 });
 
+test('file WP-Cron : le connecteur répare les entrées malformées et le signale à SSM', function () use ($ssm) {
+    // Forme vue en production : un outil d'administration avait collé des noms d'événements nus dans l'option
+    // `cron`. PHP 8 rejette ces entrées — « wp-cron.php » et la page « Santé du site » meurent dessus, et plus
+    // aucune tâche planifiée ne tourne, y compris l'envoi horaire au SSM. Structure réelle : ts => hook => signature.
+    $GLOBALS['ssm_opts']['cron'] = [
+        'version' => 2,
+        1792672843 => ['ssm_heartbeat_event' => ['sig1' => ['schedule' => 'hourly', 'args' => []]]],   // valide
+        '1792672843.1' => 'ssm_poll_event',                                                              // clé et feuille invalides
+        1792753438 => [0 => 'ssm_heartbeat_event'],                                                     // hook sous clé numérique : invalide
+        1792753439 => ['wp_version_check' => ['sig2' => ['schedule' => 'hourly', 'args' => []]]],       // valide
+    ];
+    $ssm->repair_cron();
+    $cron = $GLOBALS['ssm_opts']['cron'];
+    check(!isset($cron['1792672843.1']), 'clé de file hors format retirée');
+    check(!isset($cron[1792753438][0]), 'feuille malformée retirée');
+    check(isset($cron[1792672843]['ssm_heartbeat_event']['sig1']), 'événement SSM valide conservé');
+    check(isset($cron[1792753439]['wp_version_check']['sig2']), 'événement tiers valide conservé');
+    same($cron['version'] ?? null, 2, 'clé « version » conservée');
+    same($GLOBALS['ssm_opts']['ssm_cron_repaired']['n'] ?? null, 2, 'deux entrées invalides retirées, comptées');
+    $inv = $ssm->collect_inventory();
+    same($inv['cron_repaired'] ?? null, 2, 'le heartbeat signale le nombre retiré');
+    check(!empty($inv['cron_repaired_at']), 'le heartbeat signale la date du nettoyage');
+    // fichier sain : plus rien ne bouge, et le heartbeat ne signale rien
+    $GLOBALS['ssm_opts']['cron'] = ['version' => 2, 1792753439 => ['wp_version_check' => ['sig2' => ['schedule' => 'hourly', 'args' => []]]]];
+    unset($GLOBALS['ssm_opts']['ssm_cron_repaired']);
+    $ssm->repair_cron();
+    check(!isset($GLOBALS['ssm_opts']['ssm_cron_repaired']), 'fichier sain : rien marqué');
+    check(!array_key_exists('cron_repaired', $ssm->collect_inventory()), 'fichier sain : rien signalé');
+});
+
 echo "\n$checks vérifications, $failures échec(s)\n";
 exit($failures === 0 ? 0 : 1);

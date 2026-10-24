@@ -3,6 +3,10 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), versions sémantiques.
 
 ## [Unreleased]
+## [0.14.0] - 2026-10-23
+### Ajouté
+- Le connecteur vérifie la file WP-Cron à chaque requête (`repair_cron`). Une option `cron` contenant des entrées malformées — écriture directe par un script d'administration, plugin défectueux — faisait échouer `wp-cron.php` et la page « Santé du site » en TypeError PHP 8 : plus aucune tâche planifiée ne tournait, y compris l'envoi horaire. Les entrées invalides sont désormais retirées d'office, et le nettoyage (nombre + date) est signalé à SSM Core pendant sept jours pour qu'il cherche ce qui abîme la file.
+
 ## [0.13.0] - 2026-10-21
 ### Ajoute
 - Le connecteur annonce à SSM si `DISABLE_WP_CRON` est posé (`wp_cron_disabled`). SSM sait alors qu'il ne peut pas réveiller le site, cesse de visiter `wp-cron.php` pour rien et le signale dans l'audit du site (lenteur de l'onglet Fichiers).
