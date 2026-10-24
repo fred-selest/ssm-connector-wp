@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSM Connector
  * Description: Connecteur SSM (Selest Site Manager) : envoie toutes les heures l'inventaire du site à SSM Core et exécute ce que SSM demande (mises à jour sûres, sauvegardes, actions sur les extensions). N'ouvre aucune porte sur le site, sauf la connexion directe si vous l'activez. Se met à jour depuis les releases GitHub.
- * Version: 0.13.0
+ * Version: 0.14.0
  * Author: Selest Informatique
  * License: Private
  * Requires PHP: 7.4
@@ -18,7 +18,7 @@ if (defined('SSM_CONNECTOR_VERSION')) {
     return;
 }
 
-define('SSM_CONNECTOR_VERSION', '0.13.0');
+define('SSM_CONNECTOR_VERSION', '0.14.0');
 define('SSM_CONNECTOR_FILE', __FILE__);
 define('SSM_CONNECTOR_PAGE', 'ssm-connector');
 
@@ -48,6 +48,7 @@ class SSM_Connector {
     const OPT_LOGIN_KEY = 'ssm_login_key';            // clé de connexion directe (chiffrée)
     const OPT_VERSION_SENT = 'ssm_connector_version_sent';   // dernière version annoncée à SSM
     const OPT_SITE_ID = 'ssm_site_id';                // identifiant du site chez SSM
+    const OPT_CRON_REPAIRED = 'ssm_cron_repaired';   // dernier nettoyage de la file WP-Cron (date + nombre d'entrées retirées)
     const POLL_HOOK = 'ssm_poll_event';               // question « une action m'attend-elle ? » à SSM
     const POLL_SCHEDULE = 'ssm_two_minutes';
     // 15 s, et non 120 : WP-Cron n'execute que les echeances dues, quand une page le declenche.
@@ -864,6 +865,7 @@ class SSM_Connector {
 
     public function on_loaded() {
         $this->maybe_upgrade();
+        $this->repair_cron();
         $this->schedule_heartbeat();
         $this->schedule_poll();
         $this->announce_new_version();
@@ -1078,6 +1080,58 @@ class SSM_Connector {
         if (!wp_next_scheduled(self::POLL_HOOK)) {
             wp_schedule_event(time() + self::POLL_INTERVAL, self::POLL_SCHEDULE, self::POLL_HOOK);
         }
+    }
+
+    /**
+     * Répare la file WP-Cron quand elle contient des entrées malformées, et signale le nettoyage à SSM.
+     *
+     * L'option `cron` de WordPress est un tableau [timestamp => [hook => [signature => ['schedule' => .., 'args' => ..]]]].
+     * Une écriture directe de cette option (script d'administration, plugin défectueux) peut y laisser des feuilles
+     * invalides — par exemple le nom de l'événement collé directement sous le timestamp, sans « schedule » ni « args ».
+     * PHP 8 rejette ces entrées : « wp-cron.php » et la page « Santé du site » échouent en TypeError à chaque
+     * requête, et AUCUNE tâche planifiée ne tourne plus, y compris l'envoi horaire ici. On retire donc à chaque
+     * requête ce que WordPress refuserait de toute façon (feuille sans « schedule » ni « args », liste de tâches
+     * ou clé de file hors format), en conservant la clé « version » et les événements valides. Le décompte part au
+     * heartbeat suivant (contrat 3) pour que SSM puisse chercher ce qui écrit dans l'option cron ; un fichier sain
+     * ne coûte qu'une lecture en mémoire (option autoloadée) et une boucle vide.
+     */
+    public function repair_cron() {
+        $cron = get_option('cron');
+        if (!is_array($cron)) {
+            return;
+        }
+        $clean = [];
+        $retirees = 0;
+        if (array_key_exists('version', $cron)) {
+            $clean['version'] = $cron['version'];
+        }
+        foreach ($cron as $ts => $hooks) {
+            if ($ts === 'version') {
+                continue;
+            }
+            if (!is_int($ts) || !is_array($hooks)) {
+                $retirees++;   // clé de file hors format (« 1792672843.1 ») ou liste de tâches collée en vrac
+                continue;
+            }
+            foreach ($hooks as $hook => $events) {
+                if (!is_string($hook) || $hook === '' || !is_array($events)) {
+                    $retirees++;
+                    continue;
+                }
+                foreach ($events as $signature => $event) {
+                    if (!is_array($event) || !array_key_exists('schedule', $event) || !array_key_exists('args', $event)) {
+                        $retirees++;
+                        continue;
+                    }
+                    $clean[$ts][$hook][$signature] = $event;
+                }
+            }
+        }
+        if ($retirees === 0) {
+            return;
+        }
+        update_option('cron', $clean, true);
+        update_option(self::OPT_CRON_REPAIRED, ['at' => gmdate('Y-m-d H:i:s'), 'n' => $retirees], false);
     }
 
     public function schedule_heartbeat() {
@@ -1464,9 +1518,19 @@ class SSM_Connector {
             'command_results' => $this->take_command_results(),
             'php_errors' => $this->take_php_errors(),
             'login_enabled' => self::login_allowed(),
-            // DISABLE_WP_CRON posé : visiter wp-cron.php ne réveille pas le connecteur (SSM cesse alors de le tenter)
+            // DISABLE_WP_CRON posé : le cron déclenché par les visiteurs est coupé ; SSM Core 2.44+ peut toujours
+            // réveiller le site en appelant wp-cron.php nu (les échéances dues y sont alors exécutées).
             'wp_cron_disabled' => defined('DISABLE_WP_CRON') && (bool) constant('DISABLE_WP_CRON'),
         ];
+        $repair = get_option(self::OPT_CRON_REPAIRED);
+        if (is_array($repair) && ($repair['n'] ?? 0) > 0 && !empty($repair['at'])) {
+            $age = strtotime($repair['at'] . ' UTC');
+            if ($age !== false && time() - $age < 7 * 86400) {
+                // File WP-Cron réparée récemment : SSM peut chercher ce qui l'a abîmée (script, plugin).
+                $out['cron_repaired'] = (int)$repair['n'];
+                $out['cron_repaired_at'] = $repair['at'];
+            }
+        }
         $core = $this->core_latest();
         if ($core['known']) {
             // absent tant que WordPress n'a pas vérifié : SSM n'en déduit alors rien
