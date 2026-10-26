@@ -1,0 +1,69 @@
+name: Release installable
+
+# Vérifie que la dernière release publiée porte bien ssm-connector-wp.zip : c'est ce nom que lisent l'auto-updater
+# de l'extension et le lien « releases/latest/download/ssm-connector-wp.zip » du guide d'installation de SSM. Une
+# release créée à la main sans ses ZIP casse les deux sans que la CI du code ne le voie.
+# Si la somme SHA-256 est publiée (champ digest de GitHub), elle doit être lisible : l'extension refuse sinon la mise
+# à jour. Le workflow Release, qui joint les deux ZIP, reste la seule voie normale de publication.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  assets:
+    name: ZIP de la dernière release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Contrôler les assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          if ! gh api "repos/$REPO/releases/latest" > release.json 2> err.txt; then
+            # dépôt sans aucune release (fork, dépôt neuf) : rien à contrôler
+            if grep -q 'HTTP 404' err.txt; then
+              echo "Aucune release publiée : rien à contrôler."
+              exit 0
+            fi
+            cat err.txt >&2
+            exit 1
+          fi
+          tag=$(jq -r '.tag_name' release.json)
+          version=${tag#v}
+          stable=ssm-connector-wp.zip
+          versioned="ssm-connector-wp-v$version.zip"
+          echo "Dernière release : $tag"
+          jq -r '.assets[] | "  \(.name)  \(.digest // "(pas de digest)")"' release.json
+
+          fix() {
+            echo "Correction (depuis un clone du dépôt, avec gh authentifié) :" >&2
+            echo "  git checkout $tag && sh scripts/build-zip.sh dist \\" >&2
+            echo "    && gh release upload $tag dist/$stable dist/$versioned --clobber --repo $REPO" >&2
+          }
+
+          if ! jq -e --arg n "$stable" 'any(.assets[]; .name == $n)' release.json > /dev/null; then
+            echo "::error::La release $tag ne contient pas $stable (attendus : $stable et $versioned)."
+            echo "La release $tag ne contient pas $stable : l'auto-updater et le lien d'installation du guide SSM échouent." >&2
+            echo "Assets attendus : $stable (obligatoire, nom stable) et $versioned (archive versionnée)." >&2
+            fix
+            exit 1
+          fi
+
+          digest=$(jq -r --arg n "$stable" '.assets[] | select(.name == $n) | .digest // ""' release.json)
+          if [ -n "$digest" ] && ! printf '%s' "$digest" | grep -Eqx 'sha256:[0-9a-f]{64}'; then
+            echo "::error::Somme de contrôle illisible pour $stable dans la release $tag : « $digest »."
+            echo "L'extension refuse une somme illisible : republier les ZIP ($stable et $versioned)." >&2
+            fix
+            exit 1
+          fi
+
+          if ! jq -e --arg n "$versioned" 'any(.assets[]; .name == $n)' release.json > /dev/null; then
+            echo "::warning::La release $tag ne contient pas $versioned (archive versionnée, non bloquante)."
+          fi
+          echo "Release $tag installable : $stable présent${digest:+, $digest}."
