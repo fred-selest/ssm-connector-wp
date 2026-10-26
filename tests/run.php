@@ -690,6 +690,43 @@ test("mises à jour : somme de contrôle absente tolérée, présente mais illis
     }
 });
 
+test("mises à jour : ZIP versionné accepté en repli, seulement pour la version de la release", function () {
+    $u = updater();
+    $dl = REPO_URL . '/releases/download/v0.14.0/';
+    $base = ['tag_name' => 'v0.14.0', 'html_url' => REPO_URL . '/releases/tag/v0.14.0'];
+    $stable = ['name' => 'ssm-connector-wp.zip', 'browser_download_url' => $dl . 'ssm-connector-wp.zip', 'digest' => 'sha256:' . str_repeat('ab', 32)];
+    $versioned = ['name' => 'ssm-connector-wp-v0.14.0.zip', 'browser_download_url' => $dl . 'ssm-connector-wp-v0.14.0.zip', 'digest' => 'sha256:' . str_repeat('cd', 32)];
+
+    // nominal : le nom stable l'emporte, même listé après l'archive versionnée
+    $r = $u->parse_release(release_json($base + ['assets' => [$versioned, $stable]]));
+    check($r['ok'], 'nom stable : acceptée');
+    same($r['release']['package'], $dl . 'ssm-connector-wp.zip', 'nom stable préféré au versionné');
+    same($r['release']['sha256'], str_repeat('ab', 32), 'somme du ZIP stable');
+
+    // repli : seule l'archive versionnée de la bonne version est publiée
+    $r = $u->parse_release(release_json($base + ['assets' => [$versioned]]));
+    check($r['ok'], 'versionné de la même version : accepté');
+    same($r['release']['version'], '0.14.0', 'version de la release');
+    same($r['release']['package'], $dl . 'ssm-connector-wp-v0.14.0.zip', 'paquet versionné retenu');
+    same($r['release']['sha256'], str_repeat('cd', 32), 'somme contrôlée aussi pour le versionné');
+    $r = $u->parse_release(release_json($base + ['assets' => [['digest' => 'sha256:xyz'] + $versioned]]));
+    check(!$r['ok'], 'versionné à somme illisible refusé');
+    $r = $u->parse_release(release_json($base + ['assets' => [['browser_download_url' => 'https://evil.example/ssm-connector-wp-v0.14.0.zip'] + $versioned]]));
+    check(!$r['ok'], 'versionné hors du dépôt refusé');
+
+    // archive versionnée d'une autre version, ou nom approchant : refusés
+    foreach (['ssm-connector-wp-v0.13.0.zip', 'ssm-connector-wp-v0.14.1.zip', 'ssm-connector-wp-v0.14.0.0.zip', 'ssm-connector-wp-0.14.0.zip',
+              'ssm-connector-wp-v0.14.0.zip.sig', 'xssm-connector-wp-v0.14.0.zip', "ssm-connector-wp-v0.14.0.zip\n"] as $name) {
+        $r = $u->parse_release(release_json($base + ['assets' => [['name' => $name, 'browser_download_url' => $dl . 'ssm-connector-wp-v0.14.0.zip']]]));
+        check(!$r['ok'], 'nom refusé : ' . json_encode($name));
+    }
+
+    // aucun ZIP : le message nomme les deux noms acceptés
+    $r = $u->parse_release(release_json($base + ['assets' => []]));
+    check(!$r['ok'], 'release sans asset refusée');
+    same($r['error'], 'la release 0.14.0 ne contient ni ssm-connector-wp.zip ni ssm-connector-wp-v0.14.0.zip.', 'message nommant les deux noms attendus');
+});
+
 test("mises à jour : interrogation de GitHub, cache et erreurs", function () {
     $u = updater();
     github_returns(200, release_json());

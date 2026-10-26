@@ -3284,23 +3284,37 @@ class SSM_Connector_Updater {
         if (!preg_match('/^v?(\d+\.\d+\.\d+)$/D', $tag, $m)) {
             return $this->fail('numéro de version illisible dans la release (« ' . substr($tag, 0, 40) . ' »).');
         }
-        $package = null;
-        $digest = null;
+        // ZIP au nom stable de préférence ; à défaut, l'archive versionnée produite par scripts/build-zip.sh, mais
+        // seulement si son numéro est exactement celui de la release (jamais le ZIP d'une autre version)
+        $versioned = 'ssm-connector-wp-v' . $m[1] . '.zip';
+        $chosen = null;
+        $fallback = null;
         foreach ((isset($data['assets']) && is_array($data['assets'])) ? $data['assets'] : [] as $asset) {
-            if (is_array($asset) && isset($asset['name']) && $asset['name'] === self::ASSET) {
-                $package = isset($asset['browser_download_url']) && is_string($asset['browser_download_url']) ? $asset['browser_download_url'] : null;
-                // somme absente (anciennes releases) : pas de contrôle ; présente mais illisible : on refuse
-                if (isset($asset['digest']) && $asset['digest'] !== '') {
-                    if (!is_string($asset['digest']) || !preg_match('/^sha256:([0-9a-f]{64})$/D', $asset['digest'], $d)) {
-                        return $this->fail('somme de contrôle de la release illisible.');
-                    }
-                    $digest = $d[1];
-                }
+            if (!is_array($asset) || !isset($asset['name']) || !is_string($asset['name'])) {
+                continue;
+            }
+            if ($asset['name'] === self::ASSET) {
+                $chosen = $asset;
                 break;
             }
+            if ($fallback === null && preg_match('/^ssm-connector-wp-v(\d+\.\d+\.\d+)\.zip$/D', $asset['name'], $v) && $v[1] === $m[1]) {
+                $fallback = $asset;
+            }
         }
+        if ($chosen === null) {
+            $chosen = $fallback;
+        }
+        $package = ($chosen !== null && isset($chosen['browser_download_url']) && is_string($chosen['browser_download_url'])) ? $chosen['browser_download_url'] : null;
         if ($package === null) {
-            return $this->fail('la release ' . $m[1] . ' ne contient pas ' . self::ASSET . '.');
+            return $this->fail('la release ' . $m[1] . ' ne contient ni ' . self::ASSET . ' ni ' . $versioned . '.');
+        }
+        // somme absente (anciennes releases) : pas de contrôle ; présente mais illisible : on refuse
+        $digest = null;
+        if (isset($chosen['digest']) && $chosen['digest'] !== '') {
+            if (!is_string($chosen['digest']) || !preg_match('/^sha256:([0-9a-f]{64})$/D', $chosen['digest'], $d)) {
+                return $this->fail('somme de contrôle de la release illisible.');
+            }
+            $digest = $d[1];
         }
         if (!$this->allowed_package($package)) {
             return $this->fail('adresse de téléchargement refusée (hors du dépôt ' . self::REPO . ').');
